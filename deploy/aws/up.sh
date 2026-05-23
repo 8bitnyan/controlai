@@ -185,7 +185,20 @@ done
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o UserKnownHostsFile=/dev/null)
 [ -n "${SSH_KEY_PATH_LOCAL}" ] && ssh_opts+=(-i "${SSH_KEY_PATH_LOCAL}")
 
-ssh "${ssh_opts[@]}" ubuntu@"${public_ip}" cloud-init status --wait
+# Wait for the bootstrap script to finish; don't use `cloud-init status` exit
+# code — it returns non-zero for recoverable warnings (e.g. write_files chown
+# referencing a user created later in the same boot). The bootstrap-complete
+# log line + systemctl is-active are the truth.
+log "waiting for cloud-init bootstrap log line"
+for _i in $(seq 1 30); do
+  if ssh "${ssh_opts[@]}" ubuntu@"${public_ip}" "sudo grep -q '\[controlai-bootstrap\] complete' /var/log/cloud-init-output.log" 2>/dev/null; then
+    log "bootstrap complete after ~$((_i * 10))s"
+    break
+  fi
+  if [ "${_i}" = 30 ]; then fail "cloud-init bootstrap did not complete within 5 min"; fi
+  sleep 10
+done
+
 if [ "$(ssh "${ssh_opts[@]}" ubuntu@"${public_ip}" systemctl is-active controlai || true)" != "active" ]; then
   ssh "${ssh_opts[@]}" ubuntu@"${public_ip}" journalctl -u controlai --no-pager -n 200 || true
   fail "controlai service is not active"

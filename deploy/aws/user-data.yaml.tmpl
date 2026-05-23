@@ -13,12 +13,11 @@ packages:
   - gnupg
   - jq
   - unzip
-write_files:
-  - path: /etc/controlai/env.template
-    owner: root:controlai
-    permissions: "0640"
-    content: |
-      CONTROLAI_CA_KEY_ENCRYPTION_KEY=
+# Note: the install.sh shipped in the release tarball creates the controlai
+# system user and writes /etc/controlai/env with the right ownership. We do
+# not write_files here because cloud-init's write_files runs before the
+# bash section, and the 'controlai' group does not exist yet → recoverable
+# error that taints `cloud-init status` even though the daemon ends up healthy.
 
 --//
 Content-Type: text/x-shellscript; charset="us-ascii"
