@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"controlai/internal/audit"
+	"controlai/internal/render"
 	"controlai/internal/runner"
 	"controlai/internal/store/sqlite"
 )
@@ -38,23 +39,25 @@ type projectState struct {
 
 // Reconciler drives convergence between desired and actual compose state.
 type Reconciler struct {
-	cfg    Config
-	store  *sqlite.Store
-	docker *runner.DockerClient
-	audit  audit.Emitter
-	states map[string]*projectState // project_id → backoff state
-	log    *slog.Logger
+	cfg      Config
+	store    *sqlite.Store
+	docker   *runner.DockerClient
+	audit    audit.Emitter
+	renderer *render.Renderer
+	states   map[string]*projectState // project_id → backoff state
+	log      *slog.Logger
 }
 
 // New returns a new Reconciler.
 func New(cfg Config, store *sqlite.Store, docker *runner.DockerClient, ae audit.Emitter, log *slog.Logger) *Reconciler {
 	return &Reconciler{
-		cfg:    cfg,
-		store:  store,
-		docker: docker,
-		audit:  ae,
-		states: map[string]*projectState{},
-		log:    log,
+		cfg:      cfg,
+		store:    store,
+		docker:   docker,
+		audit:    ae,
+		renderer: render.New(),
+		states:   map[string]*projectState{},
+		log:      log,
 	}
 }
 
@@ -138,6 +141,13 @@ func (r *Reconciler) tick(ctx context.Context) {
 func (r *Reconciler) reconcileProject(ctx context.Context, desired sqlite.DesiredStateRow, composeFile string) error {
 	switch desired.State {
 	case "running":
+		// Write Traefik dynamic config before bringing up the site so that the
+		// SNI route is present by the time the broker is reachable.
+		if desired.SiteID != "" && desired.TenantID != "" {
+			if err := r.ensureTraefikDynamic(ctx, desired.TenantID, desired.SiteID); err != nil {
+				r.log.Warn("traefik dynamic config write failed; continuing reconcile", "err", err)
+			}
+		}
 		_, err := runner.Up(ctx, desired.ProjectID, composeFile)
 		if err != nil {
 			return err
@@ -181,6 +191,44 @@ func (r *Reconciler) composeFile(d sqlite.DesiredStateRow) string {
 		return filepath.Join(r.cfg.DataDir, "tenants", d.TenantID, "tsdb", "docker-compose.yml")
 	}
 	return filepath.Join(r.cfg.DataDir, "shared", "docker-compose.yml")
+}
+
+// ensureTraefikDynamic renders the per-site Traefik dynamic config and writes it
+// atomically to the shared dynamic directory. Called before bringing a site up.
+func (r *Reconciler) ensureTraefikDynamic(ctx context.Context, tenantID, siteID string) error {
+	tenant, err := r.store.GetTenant(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("get tenant %s: %w", tenantID, err)
+	}
+	site, err := r.store.GetSite(ctx, siteID)
+	if err != nil {
+		return fmt.Errorf("get site %s: %w", siteID, err)
+	}
+
+	sniHostname := siteID + "." + tenantID + "." + tenant.Domain
+	rctx := render.RenderContext{
+		Tenant: render.TenantCtx{
+			ID:     tenant.ID,
+			Domain: tenant.Domain,
+		},
+		Site: &render.SiteCtx{
+			ID:          site.ID,
+			TenantID:    site.TenantID,
+			BrokerKind:  site.BrokerKind,
+			SNIHostname: sniHostname,
+		},
+	}
+	results, err := r.renderer.RenderTraefikDynamicForSite(rctx)
+	if err != nil {
+		return fmt.Errorf("render traefik dynamic for %s/%s: %w", tenantID, siteID, err)
+	}
+	dynamicDir := filepath.Join(r.cfg.DataDir, "shared", "traefik", "dynamic")
+	if err := render.WriteResults(dynamicDir, results); err != nil {
+		return fmt.Errorf("write traefik dynamic for %s/%s: %w", tenantID, siteID, err)
+	}
+	r.log.Info("traefik dynamic config updated", "tenant", tenantID, "site", siteID,
+		"sni", sniHostname, "files", len(results))
+	return nil
 }
 
 // backoffDelay returns the delay for the given failure count (1-indexed).

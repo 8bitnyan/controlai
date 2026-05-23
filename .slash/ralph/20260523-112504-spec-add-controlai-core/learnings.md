@@ -27,3 +27,11 @@ _2026-05-23T02:50:52.305Z_
 - task **4.7**: evidence overlaps with task(s) [4.1, 8.3] on files: internal/render/templates/shared/traefik/dynamic/site-mqtt.yml.tmpl. Marking deferred.
 - task **8.3**: evidence overlaps with task(s) [4.1, 4.7] on files: internal/render/templates/shared/traefik/dynamic/site-mqtt.yml.tmpl. Marking deferred.
 
+
+_2026-05-23T03:16:00.795Z_
+
+## [driver] agent recovered
+
+Previous 1 iteration(s) had agent failures; iteration 2 ran cleanly. Counter reset.
+
+

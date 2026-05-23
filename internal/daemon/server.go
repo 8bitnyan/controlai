@@ -69,6 +69,14 @@ func New(cfg Config, store *sqlite.Store, ae audit.Emitter, rec *recon.Reconcile
 	return s
 }
 
+// Handler returns the raw http.Handler for the unix-socket transport (no auth).
+// Useful for testing without spinning up a real listener.
+func (s *Server) Handler() http.Handler { return s.router }
+
+// TCPHandler returns the http.Handler for the TCP transport (bearer-token required).
+// Useful for testing the auth middleware without a real TLS listener.
+func (s *Server) TCPHandler() http.Handler { return s.tokenAuthMiddleware(s.router) }
+
 // ServeUnix starts the unix socket listener. Blocks until ctx is done.
 func (s *Server) ServeUnix(ctx context.Context) error {
 	_ = os.Remove(s.cfg.SocketPath)

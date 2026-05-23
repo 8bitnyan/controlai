@@ -47,8 +47,8 @@
 - [x] 6.5 Implement bi-mode downlink path: daemon publishes directly to MQTT via `mqttPublish()` helper with site ingestor cert + SNI routing through Traefik :8883.
 - [x] 6.6 Implement MQTT5 shared subscription opt-in for EMQX (`$share/<site>/<filter>`); bare topic for mosquitto.
 - [x] 6.7 Implement graceful shutdown: SIGTERM → disconnect MQTT → drain ring buffer → close pgx pool, 10 s budget.
-- [ ] 6.8 Dockerfile for `controlai-ingest` image (multi-stage, distroless base).
-- [ ] 6.9 Unit tests for codec, batcher, downlink MQTT path; integration test under `// +build integration`.
+- [x] 6.8 Dockerfile for `controlai-ingest` image (multi-stage, distroless base).
+- [x] 6.9 Unit tests for codec, batcher, downlink MQTT path; integration test under `// +build integration`.
 
 ## 7. Runner & reconciler (capability: reconciler)
 - [x] 7.1 Implement `internal/runner/compose.go`: shell out to `docker compose -p <project> -f <file>` with `up`, `down`, `restart`, `ps`; capture stdout/stderr; parse `ps --format json` as NDJSON.
@@ -56,12 +56,12 @@
 - [x] 7.3 Implement per-project `sync.Mutex` map + global `semaphore.Weighted(15)` in runner/compose.go; all compose calls go through these.
 - [x] 7.4 Implement `internal/recon/reconciler.go`: 30 s tick loop, desired vs actual, drives runner, exponential backoff (30 s → 1 m → 5 m → 30 m), emits audit events.
 - [x] 7.5 `controlai apply <selector>` CLI command writes desired-state row and triggers reconciler tick via REST API.
-- [ ] 7.6 Unit tests for backoff state machine; integration tests for provision → apply → modify → restart cycle.
+- [x] 7.6 Unit tests for backoff state machine; integration tests for provision → apply → modify → restart cycle.
 
 ## 8. Edge routing (capability: edge-routing)
-- [ ] 8.1 Implement `controlai shared init` command: render shared compose + Traefik static config, start container, verify :443 + :8883 reachable.
+- [x] 8.1 Implement `controlai shared init` command: render shared compose + Traefik static config, start container, verify :443 + :8883 reachable.
 - [x] 8.2 Implement dynamic-config writer with atomic-rename pattern (`*.tmp` + `os.Rename`) in `render.WriteResults`; permissions set to 0640.
-- [ ] 8.3 Wire reconciler to maintain `shared/traefik/dynamic/` files in lockstep with `sites` table.
+- [x] 8.3 Wire reconciler to maintain `shared/traefik/dynamic/` files in lockstep with `sites` table.
 - [x] 8.4 ACME flag: `shared.traefik.acme=true` renders `certResolvers` in Traefik static config template.
 - [ ] 8.5 Integration test: bring up shared + 2 sites on `*.controlai.local`, assert MQTT SNI routing.
 
@@ -84,7 +84,7 @@
   - `POST   /v1/apply/{selector}` — write desired state, trigger reconciler tick
 - [x] 9.6 All CLI subcommands talk exclusively to the daemon via REST API (`apiGet`, `apiPost`, `apiDelete`).
 - [x] 9.7 OpenAPI 3.1 spec in `docs/api/openapi.yaml` covering all `/v1/` endpoints.
-- [ ] 9.8 Unit tests per handler; integration test exercising every endpoint against a live daemon.
+- [x] 9.8 Unit tests per handler; integration test exercising every endpoint against a live daemon.
 
 ## 10. Capacity guard (capability: capacity-guard)
 - [x] 10.1 Author `internal/capacity/profile.go` with static RSS profile table from design D10.

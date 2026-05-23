@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,7 +21,6 @@ import (
 
 	autopaho "github.com/eclipse/paho.golang/autopaho"
 	pahopkg "github.com/eclipse/paho.golang/paho"
-	cbor "github.com/fxamacker/cbor/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -177,33 +175,21 @@ func handleMessage(m *pahopkg.Publish) {
 		deviceID = parts[2]
 		metric = parts[3]
 	}
+
+	decoded := decodePayload(ingestCfg.PayloadCodec, m.Payload)
+	if decoded.DecodeErr != nil {
+		ingestLog.Warn("payload decode failed; storing raw only",
+			"codec", ingestCfg.PayloadCodec, "err", decoded.DecodeErr)
+	}
+
 	row := telemetryRow{
 		Time:     time.Now().UTC(),
 		SiteID:   ingestCfg.SiteID,
 		DeviceID: deviceID,
 		Metric:   metric,
-		Raw:      m.Payload,
-	}
-	switch ingestCfg.PayloadCodec {
-	case "cbor":
-		var decoded map[string]any
-		if err := cbor.Unmarshal(m.Payload, &decoded); err != nil {
-			ingestLog.Warn("CBOR decode failed; storing raw only", "err", err)
-		} else {
-			b, _ := json.Marshal(decoded)
-			row.Payload = b
-			row.IsJSON = true
-		}
-	case "json":
-		var decoded map[string]any
-		if err := json.Unmarshal(m.Payload, &decoded); err != nil {
-			ingestLog.Warn("JSON decode failed; storing raw only", "err", err)
-		} else {
-			row.Payload = m.Payload
-			row.IsJSON = true
-		}
-	case "raw_passthrough":
-		// payload column is NULL; raw bytea only.
+		Raw:      decoded.Raw,
+		Payload:  decoded.JSONPayload,
+		IsJSON:   decoded.IsJSON,
 	}
 
 	ringMu.Lock()
