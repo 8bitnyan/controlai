@@ -248,18 +248,15 @@ paths:
                 retention: { type: string, enum: [1m, 1h, 1d, 7d, 30d] }
                 name:      { type: string }
       responses:
-        "200":
-          description: Updated tenant
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TenantRow' }
-        "404":
-          description: Tenant not found
+        "204":
+          description: Updated successfully (no content)
+        "400":
+          description: Invalid retention value
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-        "501":
-          description: Not yet implemented
+        "404":
+          description: Tenant not found
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -283,6 +280,91 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/tenants/{tid}/start:
+    parameters:
+      - name: tid
+        in: path
+        required: true
+        schema: { type: string }
+        description: Tenant ID (e.g. tnt_acme-corp)
+    post:
+      summary: Start a tenant's TSDB and all sites (sets desired_state=running)
+      operationId: startTenant
+      tags: [Tenants]
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "202":
+          description: Starting (reconciler will converge within 60 s)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: "starting" }
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/tenants/{tid}/stop:
+    parameters:
+      - name: tid
+        in: path
+        required: true
+        schema: { type: string }
+        description: Tenant ID (e.g. tnt_acme-corp)
+    post:
+      summary: Stop a tenant's TSDB and all its sites (sets desired_state=stopped)
+      operationId: stopTenant
+      tags: [Tenants]
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "202":
+          description: Stopping (reconciler will bring containers down within 30 s)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: "stopping" }
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/status:
+    get:
+      summary: Overall status of all tenants
+      description: |
+        Returns all tenants with their current status. Tenants with status "orphaned"
+        have been removed without `--purge`. Back the `controlai status` CLI command.
+      operationId: getStatus
+      tags: [System]
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Array of tenant status entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:         { type: string, example: "tnt_acme-corp" }
+                    name:       { type: string }
+                    status:     { type: string, enum: [active, orphaned] }
+                    retention:  { type: string }
+                    site_count: { type: integer }
 
   /v1/tenants/{tid}/sites:
     parameters:
@@ -376,7 +458,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
     patch:
-      summary: Update a site
+      summary: Update a site (payload_codec or direction)
       operationId: updateSite
       tags: [Sites]
       security:
@@ -390,19 +472,17 @@ paths:
               type: object
               properties:
                 payload_codec: { type: string, enum: [cbor, json, raw_passthrough] }
+                direction:     { type: string, enum: [uni, bi] }
       responses:
-        "200":
-          description: Updated site
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SiteRow' }
-        "404":
-          description: Site not found
+        "204":
+          description: Updated successfully (no content)
+        "400":
+          description: Invalid field value
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-        "501":
-          description: Not yet implemented
+        "404":
+          description: Site not found
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -420,6 +500,70 @@ paths:
       responses:
         "204":
           description: Deleted
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/tenants/{tid}/sites/{sid}/start:
+    parameters:
+      - name: tid
+        in: path
+        required: true
+        schema: { type: string }
+      - name: sid
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Start a site (sets desired_state=running; reconciler brings containers up within 60 s)
+      operationId: startSite
+      tags: [Sites]
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "202":
+          description: Starting
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: "starting" }
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/tenants/{tid}/sites/{sid}/stop:
+    parameters:
+      - name: tid
+        in: path
+        required: true
+        schema: { type: string }
+      - name: sid
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Stop a site (sets desired_state=stopped; reconciler brings containers down within 30 s)
+      operationId: stopSite
+      tags: [Sites]
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "202":
+          description: Stopping
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: "stopping" }
         "404":
           description: Site not found
           content:
@@ -521,7 +665,8 @@ paths:
           Compose project selector.
           - `<tenant_id>-tsdb` — start the tenant TSDB
           - `<tenant_id>-<site_id>` — reconcile a site to running
-          - `<tenant_id>-<site_id>-stop` — stop a site
+          
+          Use `POST /v1/tenants/{tid}/sites/{sid}/stop` to stop a site.
     post:
       summary: Write desired state and trigger a reconciler tick
       description: |

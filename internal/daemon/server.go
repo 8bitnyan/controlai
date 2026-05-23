@@ -167,6 +167,12 @@ func (s *Server) buildRouter() chi.Router {
 	r.Patch("/v1/tenants/{tid}/sites/{sid}", s.handleUpdateSite)
 	r.Delete("/v1/tenants/{tid}/sites/{sid}", s.handleDeleteSite)
 
+	// Lifecycle stop/start for tenants and sites
+	r.Post("/v1/tenants/{tid}/start", s.handleStartTenant)
+	r.Post("/v1/tenants/{tid}/stop", s.handleStopTenant)
+	r.Post("/v1/tenants/{tid}/sites/{sid}/start", s.handleStartSite)
+	r.Post("/v1/tenants/{tid}/sites/{sid}/stop", s.handleStopSite)
+
 	// Bi-mode downlink
 	r.Post("/v1/tenants/{tid}/sites/{sid}/publish", s.handlePublish)
 
@@ -175,6 +181,9 @@ func (s *Server) buildRouter() chi.Router {
 
 	// Apply
 	r.Post("/v1/apply/{selector}", s.handleApply)
+
+	// Status overview (tenant list with statuses)
+	r.Get("/v1/status", s.handleStatus)
 
 	// PKI
 	r.Post("/v1/tenants/{tid}/sites/{sid}/pki/certs", s.handlePKIIssueCert)
@@ -619,6 +628,132 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ─── Lifecycle stop/start ─────────────────────────────────────────────────────
+
+func (s *Server) handleStartTenant(w http.ResponseWriter, r *http.Request) {
+	tid := chi.URLParam(r, "tid")
+	if _, err := s.store.GetTenant(r.Context(), tid); err != nil {
+		if err == sqlite.ErrNotFound {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("tenant %q not found", tid))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	_ = s.store.UpsertDesiredState(r.Context(), sqlite.DesiredStateRow{
+		ProjectID: tid + "-tsdb", TenantID: tid, State: "running",
+	})
+	_ = s.store.UpdateTenantStatus(r.Context(), tid, "active")
+	if s.recon != nil {
+		go s.recon.Trigger(context.Background())
+	}
+	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindTenantUpdate, TenantID: tid,
+		Detail: `{"action":"start"}`, Success: true})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "starting"})
+}
+
+func (s *Server) handleStopTenant(w http.ResponseWriter, r *http.Request) {
+	tid := chi.URLParam(r, "tid")
+	if _, err := s.store.GetTenant(r.Context(), tid); err != nil {
+		if err == sqlite.ErrNotFound {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("tenant %q not found", tid))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	_ = s.store.UpsertDesiredState(r.Context(), sqlite.DesiredStateRow{
+		ProjectID: tid + "-tsdb", TenantID: tid, State: "stopped",
+	})
+	// Also stop all sites under this tenant.
+	if sites, err := s.store.ListSitesByTenant(r.Context(), tid); err == nil {
+		for _, site := range sites {
+			_ = s.store.UpsertDesiredState(r.Context(), sqlite.DesiredStateRow{
+				ProjectID: tid + "-" + site.ID, TenantID: tid, SiteID: site.ID, State: "stopped",
+			})
+		}
+	}
+	if s.recon != nil {
+		go s.recon.Trigger(context.Background())
+	}
+	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindTenantUpdate, TenantID: tid,
+		Detail: `{"action":"stop"}`, Success: true})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopping"})
+}
+
+func (s *Server) handleStartSite(w http.ResponseWriter, r *http.Request) {
+	tid := chi.URLParam(r, "tid")
+	sid := chi.URLParam(r, "sid")
+	if _, err := s.store.GetSite(r.Context(), sid); err != nil {
+		if err == sqlite.ErrNotFound {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("site %q not found", sid))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	_ = s.store.UpsertDesiredState(r.Context(), sqlite.DesiredStateRow{
+		ProjectID: tid + "-" + sid, TenantID: tid, SiteID: sid, State: "running",
+	})
+	if s.recon != nil {
+		go s.recon.Trigger(context.Background())
+	}
+	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindSiteStart, TenantID: tid, SiteID: sid,
+		Success: true})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "starting"})
+}
+
+func (s *Server) handleStopSite(w http.ResponseWriter, r *http.Request) {
+	tid := chi.URLParam(r, "tid")
+	sid := chi.URLParam(r, "sid")
+	if _, err := s.store.GetSite(r.Context(), sid); err != nil {
+		if err == sqlite.ErrNotFound {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("site %q not found", sid))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	_ = s.store.UpsertDesiredState(r.Context(), sqlite.DesiredStateRow{
+		ProjectID: tid + "-" + sid, TenantID: tid, SiteID: sid, State: "stopped",
+	})
+	if s.recon != nil {
+		go s.recon.Trigger(context.Background())
+	}
+	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindSiteStop, TenantID: tid, SiteID: sid,
+		Success: true})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopping"})
+}
+
+// handleStatus returns a summary of all tenants with their status and site counts.
+// This backs `controlai status`.
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	tenants, err := s.store.ListTenants(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	type tenantStatus struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Status    string `json:"status"`
+		Retention string `json:"retention"`
+		SiteCount int    `json:"site_count"`
+	}
+	out := make([]tenantStatus, 0, len(tenants))
+	for _, t := range tenants {
+		sites, _ := s.store.ListSitesByTenant(r.Context(), t.ID)
+		out = append(out, tenantStatus{
+			ID:        t.ID,
+			Name:      t.Name,
+			Status:    t.Status,
+			Retention: t.Retention,
+			SiteCount: len(sites),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	tid := chi.URLParam(r, "tid")
 	sid := chi.URLParam(r, "sid")
@@ -1020,7 +1155,47 @@ func (s *Server) handlePKIRevokeCert(w http.ResponseWriter, r *http.Request) {
 		Detail:   fmt.Sprintf(`{"fingerprint":%q}`, fp),
 		Success:  true,
 	})
+
+	// For mosquitto-backed sites, revocation is enforced by restarting the broker
+	// so it re-reads the updated CRL / ACL. For EMQX, the EMQX banned-list
+	// push is handled asynchronously by the reconciler on the next tick.
+	siteRow, siteErr := s.store.GetSite(r.Context(), sid)
+	if siteErr == nil && siteRow.BrokerKind == "mosquitto" {
+		composeFile := fmt.Sprintf("%s/tenants/%s/sites/%s/docker-compose.yml", s.cfg.DataDir, tid, sid)
+		projectID := tid + "-" + sid
+		if restartErr := s.restartBroker(r.Context(), projectID, composeFile); restartErr != nil {
+			s.log.Warn("mosquitto restart after revocation failed", "site", sid, "err", restartErr)
+			_ = s.audit.Emit(r.Context(), audit.Event{
+				Kind:     audit.KindBrokerRestart,
+				TenantID: tid,
+				SiteID:   sid,
+				Detail:   fmt.Sprintf(`{"err":%q,"trigger":"revocation"}`, restartErr.Error()),
+				Success:  false,
+			})
+		} else {
+			_ = s.audit.Emit(r.Context(), audit.Event{
+				Kind:     audit.KindBrokerRestart,
+				TenantID: tid,
+				SiteID:   sid,
+				Detail:   `{"trigger":"revocation"}`,
+				Success:  true,
+			})
+		}
+	}
+
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// restartBroker issues a docker compose restart for the "broker" service in
+// the given project. Used by certificate revocation for mosquitto sites.
+func (s *Server) restartBroker(ctx context.Context, projectID, composeFile string) error {
+	cmd := exec.CommandContext(ctx, "docker", "compose",
+		"-p", projectID, "-f", composeFile, "restart", "broker")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("restart broker %s: %w (output: %s)", projectID, err, string(out))
+	}
+	return nil
 }
 
 // installBackupTimer installs the per-tenant systemd backup timer (best-effort).

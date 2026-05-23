@@ -61,6 +61,7 @@ func main() {
 		tenantCmd(),
 		siteCmd(),
 		capacityCmd(),
+		statusCmd(),
 		migrateCmd(),
 		pkiCmd(),
 		tokenCmd(),
@@ -371,19 +372,19 @@ func tenantCmd() *cobra.Command {
 
 	startCmd := &cobra.Command{
 		Use:   "start <tenant-id>",
-		Short: "Start a tenant's TSDB",
+		Short: "Start a tenant's TSDB and sites",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return apiPost("/v1/apply/"+args[0]+"-tsdb", nil)
+			return apiPost("/v1/tenants/"+args[0]+"/start", nil)
 		},
 	}
 
 	stopCmd := &cobra.Command{
 		Use:   "stop <tenant-id>",
-		Short: "Stop a tenant's TSDB",
+		Short: "Stop a tenant's TSDB and all its sites",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return apiPost("/v1/apply/"+args[0]+"-tsdb-stop", nil)
+			return apiPost("/v1/tenants/"+args[0]+"/stop", nil)
 		},
 	}
 
@@ -427,19 +428,19 @@ func siteCmd() *cobra.Command {
 
 	stopCmd := &cobra.Command{
 		Use:   "stop <tenant-id> <site-id>",
-		Short: "Stop a site",
+		Short: "Stop a site (sets desired_state=stopped; reconciler brings containers down within 30 s)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return apiPost("/v1/apply/"+args[0]+"-"+args[1]+"-stop", nil)
+			return apiPost("/v1/tenants/"+args[0]+"/sites/"+args[1]+"/stop", nil)
 		},
 	}
 
 	startCmd := &cobra.Command{
 		Use:   "start <tenant-id> <site-id>",
-		Short: "Start a site",
+		Short: "Start a site (sets desired_state=running; reconciler brings containers up within 60 s)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return apiPost("/v1/apply/"+args[0]+"-"+args[1], nil)
+			return apiPost("/v1/tenants/"+args[0]+"/sites/"+args[1]+"/start", nil)
 		},
 	}
 
@@ -486,6 +487,20 @@ func capacityCmd() *cobra.Command {
 	}
 }
 
+// ─── status ──────────────────────────────────────────────────────────────────
+
+func statusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show overall status of all tenants and sites",
+		Long: `Displays all tenants and their current status. Tenants with status "orphaned"
+have been removed without --purge and can be restored or purged.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return apiGet("/v1/status")
+		},
+	}
+}
+
 // ─── migrate ─────────────────────────────────────────────────────────────────
 
 func migrateCmd() *cobra.Command {
@@ -502,11 +517,36 @@ func migrateCmd() *cobra.Command {
 			}
 			if dryRun {
 				fmt.Printf("Would migrate %d file(s):\n", len(migrated))
-			} else {
-				fmt.Printf("Migrated %d file(s):\n", len(migrated))
+				for _, f := range migrated {
+					fmt.Println(" ", f)
+				}
+				return nil
 			}
+			fmt.Printf("Migrated %d file(s):\n", len(migrated))
 			for _, f := range migrated {
 				fmt.Println(" ", f)
+			}
+			if len(migrated) == 0 {
+				return nil
+			}
+			// Emit audit_event(kind=migrate.apply) per file migrated.
+			// The migrate command accesses SQLite directly (same as `token` commands)
+			// because it runs outside the daemon lifecycle.
+			dbPath := dataDir + "/controlai.db"
+			store, err := sqlite.Open(dbPath)
+			if err != nil {
+				// Non-fatal: log and continue — DB may not exist yet.
+				fmt.Fprintf(os.Stderr, "warn: could not open store to emit audit events: %v\n", err)
+				return nil
+			}
+			defer store.Close()
+			ctx := context.Background()
+			for _, f := range migrated {
+				_ = store.Emit(ctx, audit.Event{
+					Kind:    audit.KindMigrateApply,
+					Detail:  fmt.Sprintf(`{"file":%q,"target_version":%d}`, f, version.MaxSupportedYAMLSchemaVersion),
+					Success: true,
+				})
 			}
 			return nil
 		},
