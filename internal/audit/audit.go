@@ -25,6 +25,8 @@ const (
 	KindReconcilerBackoff Kind = "reconciler.backoff"
 	KindBrokerRestart     Kind = "broker.listener_restart"
 	KindPKIRotate         Kind = "pki.rotate"
+	KindPKIIssueCert      Kind = "pki.cert_issue"
+	KindPKIRevokeCert     Kind = "pki.cert_revoke"
 	KindMigrateApply      Kind = "migrate.apply"
 	KindTokenCreate       Kind = "token.create"
 	KindTokenRevoke       Kind = "token.revoke"

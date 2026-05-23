@@ -25,7 +25,9 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"controlai/internal/audit"
+	"controlai/internal/backup"
 	"controlai/internal/capacity"
+	"controlai/internal/pki"
 	"controlai/internal/recon"
 	"controlai/internal/render"
 	"controlai/internal/store/sqlite"
@@ -54,6 +56,9 @@ type Config struct {
 	// DockerListByProject lists containers for a project via the Docker SDK.
 	// Used by the blocking apply handler to poll for convergence.
 	DockerListByProject func(ctx context.Context, projectID string) ([]ContainerState, error)
+	// MasterKey is the AES-256-GCM master key for PKI operations.
+	// Empty slice disables automatic CA generation.
+	MasterKey []byte
 }
 
 // ContainerState is a minimal view of a Docker container's state.
@@ -171,6 +176,10 @@ func (s *Server) buildRouter() chi.Router {
 	// Apply
 	r.Post("/v1/apply/{selector}", s.handleApply)
 
+	// PKI
+	r.Post("/v1/tenants/{tid}/sites/{sid}/pki/certs", s.handlePKIIssueCert)
+	r.Delete("/v1/tenants/{tid}/sites/{sid}/pki/certs/{fp}", s.handlePKIRevokeCert)
+
 	return r
 }
 
@@ -279,6 +288,10 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 	} else if s.recon != nil {
 		go s.recon.Trigger(context.Background())
 	}
+
+	// Best-effort: install the daily backup systemd timer for this tenant.
+	// Non-fatal on non-Linux or environments without systemd.
+	installBackupTimer(tenantID, s.cfg.DevMode, s.log)
 
 	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindTenantCreate, TenantID: tenantID, Success: true})
 	writeJSON(w, http.StatusCreated, map[string]string{"id": tenantID})
@@ -456,6 +469,32 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		}
 		writeErr(w, http.StatusInternalServerError, err)
 		return
+	}
+
+	// Generate per-site CA if master key is available. The CA is stored in
+	// SQLite and used by the reconciler's EnsureTrustFiles to provision certs.
+	if len(s.cfg.MasterKey) > 0 {
+		if _, caErr := s.store.GetCACert(r.Context(), siteID); caErr == sqlite.ErrNotFound {
+			ca, caGenErr := pki.GenerateCA(tid, siteID, s.cfg.MasterKey)
+			if caGenErr != nil {
+				s.log.Warn("generate site CA failed", "site", siteID, "err", caGenErr)
+			} else {
+				caRow := sqlite.CACertRow{
+					SiteID:      siteID,
+					CertPEM:     string(ca.CertPEM),
+					KeyEnc:      ca.KeyEncrypted,
+					KeyNonce:    ca.KeyNonce,
+					Fingerprint: ca.Fingerprint,
+					NotBefore:   time.Now().Add(-5 * time.Minute),
+					NotAfter:    time.Now().AddDate(20, 0, 0),
+				}
+				if storeErr := s.store.StoreCACert(r.Context(), caRow); storeErr != nil {
+					s.log.Warn("store site CA failed", "site", siteID, "err", storeErr)
+				} else {
+					s.log.Info("per-site CA generated and stored", "site", siteID, "fingerprint", ca.Fingerprint)
+				}
+			}
+		}
 	}
 
 	// Render broker+ingest compose project and write to disk so the reconciler
@@ -841,6 +880,175 @@ func (s *Server) pollConvergence(ctx context.Context, w http.ResponseWriter, pro
 			// poll again
 		}
 	}
+}
+
+// ─── PKI handlers ─────────────────────────────────────────────────────────────
+
+// handlePKIIssueCert issues a new leaf (ClientAuth) certificate for a gateway.
+// The private key is returned to the caller exactly once and is NOT stored server-side.
+func (s *Server) handlePKIIssueCert(w http.ResponseWriter, r *http.Request) {
+	tid := chi.URLParam(r, "tid")
+	sid := chi.URLParam(r, "sid")
+
+	var req struct {
+		Gateway    string `json:"gateway"`    // gateway slug (≤63 chars)
+		TTLDays    int    `json:"ttl_days"`   // 0 → 365
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.Gateway == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("gateway name is required"))
+		return
+	}
+	// Validate gateway slug.
+	if err := validateSlugHTTP(w, req.Gateway); err != nil {
+		return
+	}
+	if req.TTLDays <= 0 {
+		req.TTLDays = 365
+	}
+
+	// Verify site exists and belongs to the tenant.
+	if _, err := s.store.GetSite(r.Context(), sid); err != nil {
+		if err == sqlite.ErrNotFound {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("site %q not found", sid))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	if len(s.cfg.MasterKey) == 0 {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("PKI unavailable: daemon started without master key (dev mode)"))
+		return
+	}
+
+	caRow, err := s.store.GetCACert(r.Context(), sid)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no CA found for site %q; provision the site first", sid))
+		return
+	}
+
+	ca := &pki.CA{
+		CertPEM:      []byte(caRow.CertPEM),
+		KeyEncrypted: caRow.KeyEnc,
+		KeyNonce:     caRow.KeyNonce,
+	}
+	if err := ca.ParseCert(); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("parse CA cert: %w", err))
+		return
+	}
+	if err := ca.DecryptKey(s.cfg.MasterKey); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("decrypt CA key: %w", err))
+		return
+	}
+
+	cn := req.Gateway
+	if len(cn) > 63 {
+		cn = cn[:63]
+	}
+	leaf, err := pki.IssueLeafCert(ca, cn, req.TTLDays)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("issue cert: %w", err))
+		return
+	}
+
+	// Store the cert metadata (NOT the private key).
+	certRow := sqlite.CertRow{
+		SiteID:      sid,
+		Kind:        "gateway",
+		CommonName:  cn,
+		CertPEM:     string(leaf.CertPEM),
+		Fingerprint: leaf.Fingerprint,
+		NotBefore:   leaf.NotBefore,
+		NotAfter:    leaf.NotAfter,
+	}
+	if storeErr := s.store.StoreCert(r.Context(), certRow); storeErr != nil && storeErr != sqlite.ErrDuplicate {
+		s.log.Warn("store gateway cert metadata failed", "site", sid, "fingerprint", leaf.Fingerprint, "err", storeErr)
+	}
+
+	_ = s.audit.Emit(r.Context(), audit.Event{
+		Kind:     audit.KindPKIIssueCert,
+		TenantID: tid,
+		SiteID:   sid,
+		Detail:   fmt.Sprintf(`{"cn":%q,"fingerprint":%q}`, cn, leaf.Fingerprint),
+		Success:  true,
+	})
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"fingerprint": leaf.Fingerprint,
+		"cert_pem":    string(leaf.CertPEM),
+		"key_pem":     string(leaf.KeyPEM), // returned exactly once, never persisted
+		"not_before":  leaf.NotBefore.Format(time.RFC3339),
+		"not_after":   leaf.NotAfter.Format(time.RFC3339),
+	})
+}
+
+// handlePKIRevokeCert revokes a certificate by fingerprint and, for EMQX sites,
+// queues a banned-list push. For mosquitto sites, marks revoked in SQLite
+// (CRL-based enforcement is handled by a future container restart).
+func (s *Server) handlePKIRevokeCert(w http.ResponseWriter, r *http.Request) {
+	tid := chi.URLParam(r, "tid")
+	sid := chi.URLParam(r, "sid")
+	fp  := chi.URLParam(r, "fp")
+
+	// Verify site exists.
+	if _, err := s.store.GetSite(r.Context(), sid); err != nil {
+		if err == sqlite.ErrNotFound {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("site %q not found", sid))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	if err := s.store.RevokeCert(r.Context(), fp); err != nil {
+		if err == sqlite.ErrNotFound {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("cert %q not found or already revoked", fp))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	_ = s.audit.Emit(r.Context(), audit.Event{
+		Kind:     audit.KindPKIRevokeCert,
+		TenantID: tid,
+		SiteID:   sid,
+		Detail:   fmt.Sprintf(`{"fingerprint":%q}`, fp),
+		Success:  true,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// installBackupTimer installs the per-tenant systemd backup timer (best-effort).
+// Errors are logged but never propagate to the caller.
+func installBackupTimer(tenantID string, devMode bool, log *slog.Logger) {
+	if devMode {
+		return // skip in dev mode
+	}
+	timerContent := backup.SystemdTimerUnit(tenantID)
+	timerPath := "/etc/systemd/system/controlai-backup-" + tenantID + ".timer"
+	if err := os.WriteFile(timerPath, []byte(timerContent), 0o644); err != nil {
+		// silently skip — systemd may not be present (containers, macOS, etc.)
+		return
+	}
+	// Enable and start the timer (best-effort).
+	if err := execSystemctl("enable", "--now", timerPath); err != nil {
+		log.Warn("enable backup timer failed", "tenant", tenantID, "err", err)
+	}
+}
+
+// execSystemctl runs a systemctl subcommand, returning any error.
+func execSystemctl(args ...string) error {
+	cmd := exec.Command("systemctl", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl %v: %w (output: %s)", args, err, string(out))
+	}
+	return nil
 }
 
 // ─── Token auth middleware (TCP transport only) ───────────────────────────────

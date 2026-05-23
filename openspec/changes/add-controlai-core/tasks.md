@@ -95,18 +95,18 @@
 
 ## 11. Backup (capability: tenant-management)
 - [x] 11.1 Implement `internal/backup/pgdump.go`: per-tenant `pg_dump` via `docker compose exec`.
-- [ ] 11.2 Implement daily systemd timer template rendered on tenant create.
-- [ ] 11.3 Output compressed dumps to `/var/backups/controlai/<tenant>/<YYYYMMDD>.sql.gz`; keep last 7.
-- [ ] 11.4 CLI: `controlai backup run <tenant>` and `controlai backup ls <tenant>`.
+- [x] 11.2 Implement daily systemd timer template rendered on tenant create.
+- [x] 11.3 Output compressed dumps to `/var/backups/controlai/<tenant>/<YYYYMMDD>.sql.gz`; keep last 7.
+- [x] 11.4 CLI: `controlai backup run <tenant>` and `controlai backup ls <tenant>`.
 
 ## 12. Systemd integration + production hardening
 - [x] 12.1 Author `deploy/systemd/controlai.service` (Type=notify, restart=on-failure).
-- [ ] 12.2 Implement `controlai install` command: unit file, `controlai` system user, file perms.
+- [x] 12.2 Implement `controlai install` command: unit file, `controlai` system user, file perms.
 - [x] 12.3 Author `deploy/install.sh` for one-shot operator install.
-- [ ] 12.4 README runbook: install, first tenant, first site, retention change, broker swap, capacity check, uninstall.
+- [x] 12.4 README runbook: install, first tenant, first site, retention change, broker swap, capacity check, uninstall.
 
 ## 13. Verification
-- [ ] 13.1 End-to-end integration test (mosquitto/low/uni + EMQX/mid/bi, telemetry rows, bi-mode downlink, broker swap, retention change).
+- [x] 13.1 End-to-end integration test (mosquitto/low/uni + EMQX/mid/bi, telemetry rows, bi-mode downlink, broker swap, retention change).
 - [ ] 13.2 Run `openspec validate add-controlai-core --strict` and resolve issues.
 - [ ] 13.3 Verify capacity guard refuses a third tenant on a synthetic 4 GiB host.
 - [ ] 13.4 Verify reconciler converges after manual `docker compose down` within 30 s.

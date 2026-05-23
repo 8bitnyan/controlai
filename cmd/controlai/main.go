@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -128,6 +129,14 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 
 	masterKey, _ := pki.MasterKey(devMode) // already validated above; ignore error here
 
+	// Schema-version pre-flight: walk all tenant.yaml and site.yaml files and
+	// exit before opening any listener if any file declares a schema_version
+	// newer than this binary supports. (tenant-management spec requirement)
+	tenantsDir := flagDataDir + "/tenants"
+	if checkErr := migrateyaml.CheckSchemaVersions(tenantsDir, version.MaxSupportedYAMLSchemaVersion); checkErr != nil {
+		return checkErr
+	}
+
 	var lastTick time.Time
 	rec := recon.New(recon.Config{
 		DataDir:    flagDataDir,
@@ -147,6 +156,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		TLSKeyFile:  tlsKey,
 		DataDir:     flagDataDir,
 		DevMode:     devMode,
+		MasterKey:   masterKey,
 		ReconcilerLastTick: &lastTick,
 		DockerReachable: func(ctx context.Context) bool {
 			if docker == nil {
@@ -511,24 +521,53 @@ func pkiCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "pki", Short: "PKI management"}
 
 	issueCmd := &cobra.Command{
-		Use:   "cert issue --site <tenant>/<site> --gateway <name>",
+		Use:   "cert issue --site <tenant-id/site-id> --gateway <name>",
 		Short: "Issue a leaf certificate for a gateway",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// This operation requires daemon access.
-			return fmt.Errorf("pki cert issue: daemon-backed issuance not yet implemented in CLI; use the REST API")
+			siteFlag, _ := cmd.Flags().GetString("site")
+			gateway, _ := cmd.Flags().GetString("gateway")
+			ttlDays, _ := cmd.Flags().GetInt("ttl-days")
+			if siteFlag == "" {
+				return fmt.Errorf("--site is required (format: <tenant-id>/<site-id>)")
+			}
+			if gateway == "" {
+				return fmt.Errorf("--gateway is required")
+			}
+			parts := strings.SplitN(siteFlag, "/", 2)
+			if len(parts) != 2 {
+				return fmt.Errorf("--site must be in format <tenant-id>/<site-id>, e.g. tnt_acme/ste_seoul")
+			}
+			tid, sid := parts[0], parts[1]
+			path := fmt.Sprintf("/v1/tenants/%s/sites/%s/pki/certs", tid, sid)
+			return apiPost(path, map[string]any{
+				"gateway":  gateway,
+				"ttl_days": ttlDays,
+			})
 		},
 	}
-	issueCmd.Flags().String("site", "", "site identifier (tenant-id/site-id)")
-	issueCmd.Flags().String("gateway", "", "gateway name (slug)")
+	issueCmd.Flags().String("site", "", "site identifier in format <tenant-id>/<site-id>")
+	issueCmd.Flags().String("gateway", "", "gateway name (slug, ≤63 chars)")
+	issueCmd.Flags().Int("ttl-days", 365, "certificate validity in days")
 
 	revokeCmd := &cobra.Command{
-		Use:   "cert revoke <fingerprint>",
+		Use:   "cert revoke --site <tenant-id/site-id> <fingerprint>",
 		Short: "Revoke a certificate by fingerprint",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("pki cert revoke: not yet implemented in CLI; use the REST API")
+			siteFlag, _ := cmd.Flags().GetString("site")
+			if siteFlag == "" {
+				return fmt.Errorf("--site is required (format: <tenant-id>/<site-id>)")
+			}
+			parts := strings.SplitN(siteFlag, "/", 2)
+			if len(parts) != 2 {
+				return fmt.Errorf("--site must be in format <tenant-id>/<site-id>, e.g. tnt_acme/ste_seoul")
+			}
+			tid, sid := parts[0], parts[1]
+			path := fmt.Sprintf("/v1/tenants/%s/sites/%s/pki/certs/%s", tid, sid, args[0])
+			return apiDelete(path)
 		},
 	}
+	revokeCmd.Flags().String("site", "", "site identifier in format <tenant-id>/<site-id>")
 
 	caCmd := &cobra.Command{
 		Use:   "ca create --site <tenant>/<site>",

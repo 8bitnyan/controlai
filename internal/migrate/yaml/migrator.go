@@ -129,6 +129,55 @@ func WalkAndMigrate(root string, targetVersion int, dryRun bool) ([]string, erro
 	return migrated, err
 }
 
+// CheckSchemaVersions walks the tenant registry tree rooted at root (typically
+// /var/lib/controlai/tenants) and returns an error listing every tenant.yaml
+// and site.yaml whose schema_version exceeds maxVersion. This is called by the
+// daemon at startup before opening any listener so that it exits cleanly when
+// the on-disk YAML is newer than the binary understands.
+func CheckSchemaVersions(root string, maxVersion int) error {
+	var offenders []string
+	patterns := []string{"tenant.yaml", "site.yaml"}
+
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil //nolint:nilerr
+		}
+		base := filepath.Base(path)
+		for _, p := range patterns {
+			if base != p {
+				continue
+			}
+			raw, readErr := os.ReadFile(path)
+			if readErr != nil {
+				offenders = append(offenders, path+": "+readErr.Error())
+				return nil
+			}
+			var m map[string]any
+			if yerr := yamlv3.Unmarshal(raw, &m); yerr != nil {
+				offenders = append(offenders, path+": "+yerr.Error())
+				return nil
+			}
+			v, _ := schemaVersion(m)
+			if v > maxVersion {
+				offenders = append(offenders,
+					fmt.Sprintf("%s: schema_version=%d > supported=%d", path, v, maxVersion))
+			}
+		}
+		return nil
+	})
+
+	if len(offenders) > 0 {
+		msg := fmt.Sprintf("daemon refuses to start: %d YAML file(s) declare a schema_version "+
+			"newer than this binary supports (max=%d). Run 'controlai migrate' or upgrade the binary.\n",
+			len(offenders), maxVersion)
+		for _, o := range offenders {
+			msg += "  " + o + "\n"
+		}
+		return errors.New(msg)
+	}
+	return nil
+}
+
 // schemaVersion extracts the schema_version field from a parsed YAML map.
 func schemaVersion(m map[string]any) (int, error) {
 	v, ok := m["schema_version"]
