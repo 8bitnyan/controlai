@@ -49,7 +49,7 @@ func main() {
 			log.Init(flagLogLevel)
 		},
 	}
-	root.PersistentFlags().StringVar(&flagSocket, "socket", "/var/run/controlai.sock", "unix socket path")
+	root.PersistentFlags().StringVar(&flagSocket, "socket", "/run/controlai/controlai.sock", "unix socket path")
 	root.PersistentFlags().StringVar(&flagToken, "token", "", "bearer token for remote daemon")
 	root.PersistentFlags().StringVar(&flagDataDir, "data-dir", "/var/lib/controlai", "controlai data directory")
 	root.PersistentFlags().StringVar(&flagLogLevel, "log-level", "info", "log level (debug|info|warn|error)")
@@ -964,11 +964,16 @@ RestartSec=5s
 TimeoutStartSec=30
 TimeoutStopSec=30
 
+# Runtime directory: /run/controlai/ owned by controlai:controlai, created
+# at start and cleaned up at stop. Daemon binds /run/controlai/controlai.sock here.
+RuntimeDirectory=controlai
+RuntimeDirectoryMode=0755
+
 # Security hardening
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/controlai /var/run /var/backups/controlai
+ReadWritePaths=/var/lib/controlai /var/backups/controlai
 PrivateTmp=yes
 
 [Install]

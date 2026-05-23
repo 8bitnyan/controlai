@@ -180,11 +180,11 @@ curl http://192.0.2.123/
 
 ### Accessing the Daemon REST API
 
-The controlai daemon listens on a **unix socket** (`/var/run/controlai.sock`) and is **not exposed to the public network**. To access it:
+The controlai daemon listens on a **unix socket** (`/run/controlai/controlai.sock`) and is **not exposed to the public network**. To access it:
 
 ```bash
 # From your laptop, open an SSH tunnel:
-ssh -i ~/.ssh/controlai-poc.pem -L 7777:/var/run/controlai.sock ubuntu@192.0.2.123
+ssh -i ~/.ssh/controlai-poc.pem -L 7777:/run/controlai/controlai.sock ubuntu@192.0.2.123
 
 # In a second terminal, curl through the tunnel:
 curl --unix-socket /tmp/controlai.sock http://localhost/v1/health

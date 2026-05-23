@@ -5,7 +5,7 @@ info:
     controlai REST API — multi-tenant IoT data-pipeline control plane.
 
     Two transports expose the identical handler set:
-    - **Unix socket** (default): `/var/run/controlai.sock` — used by the CLI; no token required.
+    - **Unix socket** (default): `/run/controlai/controlai.sock` — used by the CLI; no token required.
     - **TCP+TLS** (optional): bearer-token required on every request.
   version: "1.0.0"
 

@@ -13,7 +13,6 @@ packages:
   - gnupg
   - jq
   - unzip
-  - awscli
 write_files:
   - path: /etc/controlai/env.template
     owner: root:controlai
@@ -49,6 +48,14 @@ EOF_DOCKER_SOURCE
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable --now docker
+
+# Ubuntu 24.04 (Noble) removed the legacy `awscli` apt package (it was Python v1
+# and EOL). Install AWS CLI v2 from the official zip — required by the SSM key
+# fetch step below.
+log "installing AWS CLI v2"
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+unzip -qo /tmp/awscliv2.zip -d /tmp/
+/tmp/aws/install --update
 
 VERSION="${CONTROLAI_VERSION}"
 if [ "${CONTROLAI_VERSION}" = "latest" ]; then

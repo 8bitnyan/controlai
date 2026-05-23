@@ -192,7 +192,7 @@ if [ "$(ssh "${ssh_opts[@]}" ubuntu@"${public_ip}" systemctl is-active controlai
 fi
 
 # Probe strategy: try /v1/health first; if 404, fallback to bootstrap log + active systemd.
-if ! ssh "${ssh_opts[@]}" ubuntu@"${public_ip}" 'code=$(curl -sS -o /dev/null -w "%{http_code}" --unix-socket /var/run/controlai.sock http://localhost/v1/health || true); if [ "$code" = "200" ]; then exit 0; fi; if [ "$code" = "404" ]; then grep -q "\[controlai-bootstrap\] complete" /var/log/cloud-init-output.log && [ "$(systemctl is-active controlai)" = "active" ]; else exit 1; fi'; then
+if ! ssh "${ssh_opts[@]}" ubuntu@"${public_ip}" 'code=$(sudo curl -sS -o /dev/null -w "%{http_code}" --unix-socket /run/controlai/controlai.sock http://localhost/v1/health || true); if [ "$code" = "200" ]; then exit 0; fi; if [ "$code" = "404" ]; then grep -q "\[controlai-bootstrap\] complete" /var/log/cloud-init-output.log && [ "$(systemctl is-active controlai)" = "active" ]; else exit 1; fi'; then
   ssh "${ssh_opts[@]}" ubuntu@"${public_ip}" journalctl -u controlai --no-pager -n 200 || true
   fail "controlai health smoke test failed"
 fi

@@ -36,7 +36,7 @@ import (
 
 // Config holds daemon server configuration.
 type Config struct {
-	// SocketPath is the unix socket path (default /var/run/controlai.sock).
+	// SocketPath is the unix socket path (default /run/controlai/controlai.sock).
 	SocketPath string
 	// TCPAddr is the optional TCP listen address (e.g. ":8443"). Empty = disabled.
 	TCPAddr string
