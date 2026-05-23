@@ -108,7 +108,14 @@ info "Installing systemd unit files..."
 # The service unit is installed by the binary's `controlai install` command;
 # this script also ships the unit files directly for operator convenience.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SYSTEMD_SRC="$(dirname "${SCRIPT_DIR}")/systemd"
+# Support both layouts:
+#   - Repo: deploy/install/install.sh + deploy/systemd/  → parent's sibling
+#   - Release tarball: ./install.sh + ./systemd/         → direct sibling
+if [[ -d "${SCRIPT_DIR}/systemd" ]]; then
+  SYSTEMD_SRC="${SCRIPT_DIR}/systemd"
+else
+  SYSTEMD_SRC="$(dirname "${SCRIPT_DIR}")/systemd"
+fi
 
 if [[ -d "${SYSTEMD_SRC}" ]]; then
   for unit_file in "${SYSTEMD_SRC}"/*.service "${SYSTEMD_SRC}"/*.timer; do
