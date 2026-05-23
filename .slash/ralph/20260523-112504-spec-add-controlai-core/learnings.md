@@ -46,3 +46,11 @@ Consecutive agent-failure count: 1/3
 Detail: Ralph session did not finish within 1500s
 
 
+
+_2026-05-23T04:50:35.913Z_
+
+## [driver] agent recovered
+
+Previous 1 iteration(s) had agent failures; iteration 7 ran cleanly. Counter reset.
+
+

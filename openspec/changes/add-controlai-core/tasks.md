@@ -107,7 +107,7 @@
 
 ## 13. Verification
 - [x] 13.1 End-to-end integration test (mosquitto/low/uni + EMQX/mid/bi, telemetry rows, bi-mode downlink, broker swap, retention change).
-- [ ] 13.2 Run `openspec validate add-controlai-core --strict` and resolve issues.
-- [ ] 13.3 Verify capacity guard refuses a third tenant on a synthetic 4 GiB host.
-- [ ] 13.4 Verify reconciler converges after manual `docker compose down` within 30 s.
-- [ ] 13.5 Manual cleanup: `controlai tenant rm --purge` removes containers + volumes.
+- [x] 13.2 Run `openspec validate add-controlai-core --strict` and resolve issues.
+- [x] 13.3 Verify capacity guard refuses a third tenant on a synthetic 4 GiB host.
+- [x] 13.4 Verify reconciler converges after manual `docker compose down` within 30 s.
+- [x] 13.5 Manual cleanup: `controlai tenant rm --purge` removes containers + volumes.

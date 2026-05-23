@@ -338,3 +338,170 @@ func parseTime(t *testing.T, s string) (ts time.Time) {
 	}
 	return ts
 }
+
+// ─── Task 13.5 Verification: purge delete removes all artifacts ────────────────
+
+// TestPurgeDelete_TenantRowRemovedCompletely verifies that controlai tenant rm --purge
+// (purge=true) completely removes the tenant row from SQLite so that subsequent
+// reads return ErrNotFound.  This is the database-layer assertion for the spec
+// scenario "controlai tenant rm tnt_acme-corp --purge removes containers +
+// volumes + on-disk directory + tenant row from SQLite."
+func TestPurgeDelete_TenantRowRemovedCompletely(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	const tenantID = "tnt_purge-test"
+	if err := store.CreateTenant(ctx, sqlite.TenantRow{
+		ID:            tenantID,
+		Name:          "Purge Test",
+		Domain:        "purge.example.com",
+		Retention:     "7d",
+		SchemaVersion: 1,
+	}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	// Verify tenant exists before purge.
+	got, err := store.GetTenant(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("get before purge: %v", err)
+	}
+	if got.ID != tenantID {
+		t.Fatalf("tenant ID mismatch: %s", got.ID)
+	}
+
+	// Hard delete (purge=true) — models `controlai tenant rm --purge`.
+	if err := store.DeleteTenant(ctx, tenantID, true); err != nil {
+		t.Fatalf("hard delete (purge): %v", err)
+	}
+
+	// After purge, GetTenant must return ErrNotFound.
+	_, err = store.GetTenant(ctx, tenantID)
+	if err != sqlite.ErrNotFound {
+		t.Errorf("expected ErrNotFound after purge, got %v", err)
+	}
+
+	// ListTenants must not include the purged tenant.
+	tenants, err := store.ListTenants(ctx)
+	if err != nil {
+		t.Fatalf("list after purge: %v", err)
+	}
+	for _, tn := range tenants {
+		if tn.ID == tenantID {
+			t.Errorf("purged tenant %s must not appear in ListTenants", tenantID)
+		}
+	}
+}
+
+// TestPurgeDelete_SitesRemovedWithTenant verifies that all sites belonging to a
+// purged tenant are also removed via cascade.  The spec requires:
+//   "controlai SHALL stop all related containers, remove all related volumes,
+//    delete /var/lib/controlai/tenants/<id>/ … and remove the tenant row from SQLite"
+//
+// The SQLite layer must enforce cascade deletion of sites when a tenant is purged.
+func TestPurgeDelete_SitesRemovedWithTenant(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	const tenantID = "tnt_cascade-purge"
+	if err := store.CreateTenant(ctx, sqlite.TenantRow{
+		ID:            tenantID,
+		Domain:        "cascade.example.com",
+		Retention:     "1d",
+		SchemaVersion: 1,
+	}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	// Add two sites under the tenant.
+	for _, siteID := range []string{"ste_alpha", "ste_beta"} {
+		if err := store.CreateSite(ctx, sqlite.SiteRow{
+			ID:            siteID,
+			TenantID:      tenantID,
+			BrokerKind:    "mosquitto",
+			Throughput:    "low",
+			Direction:     "uni",
+			PayloadCodec:  "cbor",
+			LeafTTLDays:   365,
+			SchemaVersion: 1,
+		}); err != nil {
+			t.Fatalf("create site %s: %v", siteID, err)
+		}
+	}
+
+	// Confirm sites exist.
+	sites, err := store.ListSitesByTenant(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("list sites before purge: %v", err)
+	}
+	if len(sites) != 2 {
+		t.Fatalf("expected 2 sites before purge, got %d", len(sites))
+	}
+
+	// Purge the tenant.
+	if err := store.DeleteTenant(ctx, tenantID, true); err != nil {
+		t.Fatalf("purge tenant: %v", err)
+	}
+
+	// All sites must be gone.
+	sitesAfter, err := store.ListSitesByTenant(ctx, tenantID)
+	if err != nil && err != sqlite.ErrNotFound {
+		t.Fatalf("list sites after purge: %v", err)
+	}
+	if len(sitesAfter) != 0 {
+		t.Errorf("expected 0 sites after tenant purge, got %d (cascade delete missing?)", len(sitesAfter))
+	}
+}
+
+// TestSoftDelete_PreservesDataAsOrphaned verifies the conservative delete path:
+// `controlai tenant rm` without --purge sets status=orphaned but does not remove
+// the tenant row or its sites (data is preserved for recovery).
+func TestSoftDelete_PreservesDataAsOrphaned(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	const tenantID = "tnt_soft-delete"
+	if err := store.CreateTenant(ctx, sqlite.TenantRow{
+		ID:            tenantID,
+		Domain:        "soft.example.com",
+		Retention:     "7d",
+		SchemaVersion: 1,
+	}); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	if err := store.CreateSite(ctx, sqlite.SiteRow{
+		ID:            "ste_keep",
+		TenantID:      tenantID,
+		BrokerKind:    "mosquitto",
+		Throughput:    "low",
+		Direction:     "uni",
+		PayloadCodec:  "cbor",
+		LeafTTLDays:   365,
+		SchemaVersion: 1,
+	}); err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+
+	// Soft delete (purge=false).
+	if err := store.DeleteTenant(ctx, tenantID, false); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	// Tenant must still exist as orphaned.
+	got, err := store.GetTenant(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("get after soft delete: %v", err)
+	}
+	if got.Status != "orphaned" {
+		t.Errorf("expected status=orphaned, got %q", got.Status)
+	}
+
+	// Sites must still be present (data preserved for recovery).
+	sites, err := store.ListSitesByTenant(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("list sites after soft delete: %v", err)
+	}
+	if len(sites) == 0 {
+		t.Error("sites must be preserved after soft delete; data loss is unacceptable without --purge")
+	}
+}

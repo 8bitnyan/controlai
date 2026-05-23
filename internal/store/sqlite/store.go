@@ -112,10 +112,46 @@ func (s *Store) ListTenants(ctx context.Context) ([]TenantRow, error) {
 }
 
 // DeleteTenant marks a tenant as orphaned (soft delete). Pass purge=true to hard-delete.
+//
+// Purge cascades in dependency order:
+//  1. desired_state rows for all tenant sites (no FK, explicit delete)
+//  2. Sites (ON DELETE CASCADE propagates to cas, certs, emqx_api_keys)
+//  3. Tenant row (ON DELETE CASCADE propagates to tsdb_credentials)
 func (s *Store) DeleteTenant(ctx context.Context, id string, purge bool) error {
 	if purge {
-		_, err := s.db.ExecContext(ctx, `DELETE FROM tenants WHERE id = ?`, id)
-		return err
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("delete tenant %s begin tx: %w", id, err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		// 1. Remove desired_state rows for all sites belonging to this tenant
+		//    (no FK constraint, must be cleaned up explicitly).
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM desired_state WHERE tenant_id = ?`, id); err != nil {
+			return fmt.Errorf("delete desired_state for tenant %s: %w", id, err)
+		}
+		// Also remove the TSDB project desired_state row.
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM desired_state WHERE project_id = ?`, id+"-tsdb"); err != nil {
+			return fmt.Errorf("delete tsdb desired_state for tenant %s: %w", id, err)
+		}
+
+		// 2. Delete sites. The schema has ON DELETE RESTRICT (not CASCADE) on the
+		//    tenant FK, so we must delete child sites before the parent tenant.
+		//    Deleting sites cascades to: cas, certs, emqx_api_keys (all CASCADE).
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM sites WHERE tenant_id = ?`, id); err != nil {
+			return fmt.Errorf("delete sites for tenant %s: %w", id, err)
+		}
+
+		// 3. Delete the tenant. tsdb_credentials cascades automatically (CASCADE).
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM tenants WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("delete tenant %s: %w", id, err)
+		}
+
+		return tx.Commit()
 	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE tenants SET status='orphaned', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`, id)
@@ -236,10 +272,32 @@ func (s *Store) ListAllSites(ctx context.Context) ([]SiteRow, error) {
 }
 
 // DeleteSite marks a site as orphaned or hard-deletes it.
+//
+// Purge cascades in dependency order:
+//  1. desired_state rows for this site (no FK, explicit delete by site_id)
+//  2. Site row (ON DELETE CASCADE propagates to: cas, certs, emqx_api_keys)
 func (s *Store) DeleteSite(ctx context.Context, id string, purge bool) error {
 	if purge {
-		_, err := s.db.ExecContext(ctx, `DELETE FROM sites WHERE id = ?`, id)
-		return err
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("delete site %s begin tx: %w", id, err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		// 1. Remove desired_state rows that reference this site
+		//    (no FK constraint; project_id encodes tenant+site).
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM desired_state WHERE site_id = ?`, id); err != nil {
+			return fmt.Errorf("delete desired_state for site %s: %w", id, err)
+		}
+
+		// 2. Delete the site row. cas, certs, emqx_api_keys all CASCADE.
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM sites WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("delete site %s: %w", id, err)
+		}
+
+		return tx.Commit()
 	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE sites SET status='orphaned', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`, id)

@@ -1,0 +1,13 @@
+{
+  "iteration": 7,
+  "verdict": "NOT_DONE",
+  "reason": "Iter 7 marked Task 13.1 [x] and implemented comprehensive daemon API-level end-to-end test (632 lines) covering tenant/site CRUD, capability matrix, retention changes, bi-mode downlink logic, broker swap, PKI routes, and apply/logs endpoints. However, the test stubs Docker entirely (returns false/nil), so it validates API contracts only — NOT the actual container provisioning, telemetry ingestion, retention policy application, or broker swap success that the spec explicitly requires. Task 13.2-13.5 verification tasks remain unimplemented.",
+  "missing": [
+    "Task 13.1 incomplete: E2E test validates API contracts but NOT actual provisioning outcomes. Stubs docker; does not verify: (a) containers are actually provisioned via docker compose, (b) telemetry rows published and stored in Postgres, (c) retention policies applied to TSDB, (d) broker swap succeeds with actual container restart. Spec requirement explicitly lists 'telemetry rows published/stored' + 'broker swap succeeds' + 'retention policy change applies'.",
+    "Task 13.2: openspec validate add-controlai-core --strict not run (still marked [ ])",
+    "Task 13.3: Capacity guard 3-tenant test not implemented (still marked [ ])",
+    "Task 13.4: Reconciler convergence after docker compose down not tested (still marked [ ])",
+    "Task 13.5: Manual cleanup (controlai tenant rm --purge) not verified (still marked [ ])"
+  ],
+  "lensHint": "E2E test is comprehensive for API surface but docker-stubbed; Task 13.1 requires real docker integration test with mosquitto/EMQX and actual Postgres telemetry validation to be marked DONE. Next: either (1) refactor e2e test to run with real docker-compose (docker required in CI) or (2) split into api-level test (done) + separate docker integration test; then implement 13.2-13.5 verification tasks."
+}

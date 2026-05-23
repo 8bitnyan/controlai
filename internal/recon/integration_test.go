@@ -62,8 +62,15 @@ services:
 	return composeFile
 }
 
-// TestReconciler_ConvergesAfterManualDown verifies that the reconciler
-// recreates containers that are manually stopped (task 7.6 core scenario).
+// TestReconciler_ConvergesAfterManualDown verifies the core reconciler spec
+// scenario (task 7.6, task 13.4):
+//
+//	"WHEN an operator manually runs docker compose down on a site that controlai
+//	 has desired=running THEN within 30 s the reconciler SHALL detect the absence,
+//	 run up -d, and the site SHALL be running again."
+//
+// This test injects a desired_state row, brings containers down manually, and
+// asserts the reconciler brings them back within the 30 s period.
 func TestReconciler_ConvergesAfterManualDown(t *testing.T) {
 	if !dockerAvailable() {
 		t.Skip("docker not available; skipping integration test")
@@ -72,90 +79,151 @@ func TestReconciler_ConvergesAfterManualDown(t *testing.T) {
 	tmpDir := t.TempDir()
 	projectID := "recon-int-test-converge"
 	composeFile := writeMinimalCompose(t, tmpDir, projectID)
-
-	// Start the container manually so we have something to converge against.
 	ctx := context.Background()
+
+	// Bring the container up initially so the reconciler has something to detect.
 	upCmd := exec.CommandContext(ctx, "docker", "compose",
 		"-p", projectID, "-f", composeFile, "up", "-d", "--wait")
 	if out, err := upCmd.CombinedOutput(); err != nil {
-		t.Fatalf("compose up: %v\n%s", err, out)
+		t.Fatalf("initial compose up: %v\n%s", err, out)
 	}
 	t.Cleanup(func() {
-		downCmd := exec.Command("docker", "compose",
-			"-p", projectID, "-f", composeFile, "down", "--remove-orphans")
-		_ = downCmd.Run()
+		_ = exec.Command("docker", "compose",
+			"-p", projectID, "-f", composeFile, "down", "--remove-orphans").Run()
 	})
 
-	// Verify container is running.
+	// Verify it's running.
 	time.Sleep(2 * time.Second)
 	psCmd := exec.CommandContext(ctx, "docker", "compose",
 		"-p", projectID, "-f", composeFile, "ps", "--services", "--filter", "status=running")
-	psOut, err := psCmd.Output()
-	if err != nil || len(psOut) == 0 {
-		t.Logf("ps output: %s", psOut)
-		t.Fatalf("container not running after up: %v", err)
+	if psOut, err := psCmd.Output(); err != nil || len(psOut) == 0 {
+		t.Fatalf("container not running after initial up (out=%s err=%v)", psOut, err)
 	}
 
-	// Manually bring the container down to simulate the failure case.
-	downCmd := exec.CommandContext(ctx, "docker", "compose",
-		"-p", projectID, "-f", composeFile, "down")
-	if out, err := downCmd.CombinedOutput(); err != nil {
+	// Manually bring it down — simulates an operator error or docker restart.
+	if out, err := exec.CommandContext(ctx, "docker", "compose",
+		"-p", projectID, "-f", composeFile, "down").CombinedOutput(); err != nil {
 		t.Fatalf("compose down: %v\n%s", err, out)
 	}
+	time.Sleep(1 * time.Second) // let docker settle
 
-	// Verify it's actually down.
-	time.Sleep(1 * time.Second)
-	psCmd2 := exec.CommandContext(ctx, "docker", "compose",
-		"-p", projectID, "-f", composeFile, "ps", "--services", "--filter", "status=running")
-	psOut2, _ := psCmd2.Output()
-	if len(psOut2) > 0 {
-		t.Logf("WARNING: container may still be running after down: %s", psOut2)
+	// Open an in-process store and inject a desired_state row (desired=running).
+	store := openIntegrationStore(t)
+	if err := store.UpsertDesiredState(ctx, sqlite.DesiredStateRow{
+		ProjectID: projectID,
+		TenantID:  "tnt_test",
+		SiteID:    "ste_test",
+		State:     "running",
+	}); err != nil {
+		t.Fatalf("upsert desired state: %v", err)
 	}
 
-	// Now use the reconciler's runner to bring it back up — simulating convergence.
-	store := openIntegrationStore(t)
+	// Start the reconciler with a fast tick period.
 	lastTick := time.Now()
 	rec := New(Config{
 		DataDir:    tmpDir,
-		BasePeriod: 5 * time.Second, // fast period for integration test
+		BasePeriod: 3 * time.Second, // fast for testing
 		LastTick:   &lastTick,
 	}, store, nil, store, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
-	// Inject a desired-state entry so the reconciler knows about this project.
-	// We write directly to the store since the daemon API isn't running here.
 	reconcilerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Start the reconciler loop in background.
 	reconDone := make(chan struct{})
 	go func() {
 		defer close(reconDone)
 		rec.Run(reconcilerCtx)
 	}()
 
-	// The reconciler ticks every 5s. Give it 20s to detect and converge.
-	t.Log("waiting for reconciler to converge...")
-	deadline := time.Now().Add(20 * time.Second)
+	// Poll until the container is running again (reconciler convergence).
+	// Spec requires convergence within 30 s; we give it the full timeout.
+	t.Log("waiting for reconciler to detect absence and converge...")
+	converged := false
+	deadline := time.Now().Add(28 * time.Second)
 	for time.Now().Before(deadline) {
 		psCmd3 := exec.CommandContext(ctx, "docker", "compose",
 			"-p", projectID, "-f", composeFile, "ps", "--services", "--filter", "status=running")
 		psOut3, _ := psCmd3.Output()
 		if len(psOut3) > 0 {
-			t.Logf("container running again after reconciler convergence: %s", psOut3)
-			cancel() // stop reconciler
-			<-reconDone
-			return
+			t.Logf("reconciler convergence confirmed: container running again after manual docker compose down")
+			converged = true
+			break
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(1 * time.Second)
 	}
 
-	// If the container is still down, that's expected here since the reconciler
-	// only manages projects it knows about from the store — and we didn't inject
-	// a desired_state row. The important test is the lower-level behavior:
-	// the reconciler loop starts, ticks, and doesn't panic.
-	t.Log("Reconciler ticked without panic — convergence of unregistered projects is expected no-op")
 	cancel()
 	<-reconDone
+
+	if !converged {
+		t.Error("reconciler did NOT converge after manual docker compose down within 30 s")
+	}
+
+	// Verify LastTick was updated (proves the reconciler actually ran ticks).
+	if lastTick.IsZero() {
+		t.Error("reconciler did not update LastTick during run")
+	}
+}
+
+// TestReconciler_StoppedDesiredStateHonored_Integration verifies that when
+// desired_state=stopped, the reconciler does NOT recreate stopped containers.
+// Spec: "the reconciler SHALL NOT recreate the containers and the audit log
+// SHALL show no spurious up attempts."
+func TestReconciler_StoppedDesiredStateHonored_Integration(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available; skipping integration test")
+	}
+
+	tmpDir := t.TempDir()
+	projectID := "recon-int-stopped-test"
+	composeFile := writeMinimalCompose(t, tmpDir, projectID)
+	ctx := context.Background()
+
+	// Ensure container is NOT running initially.
+	_ = exec.Command("docker", "compose",
+		"-p", projectID, "-f", composeFile, "down").Run()
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "compose",
+			"-p", projectID, "-f", composeFile, "down", "--remove-orphans").Run()
+	})
+
+	// Inject desired_state=stopped.
+	store := openIntegrationStore(t)
+	if err := store.UpsertDesiredState(ctx, sqlite.DesiredStateRow{
+		ProjectID: projectID,
+		TenantID:  "tnt_stopped",
+		SiteID:    "ste_stopped",
+		State:     "stopped",
+	}); err != nil {
+		t.Fatalf("upsert desired state: %v", err)
+	}
+
+	// Run the reconciler for several ticks.
+	lastTick := time.Now()
+	rec := New(Config{
+		DataDir:    tmpDir,
+		BasePeriod: 2 * time.Second,
+		LastTick:   &lastTick,
+	}, store, nil, store, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	reconcilerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	reconDone := make(chan struct{})
+	go func() {
+		defer close(reconDone)
+		rec.Run(reconcilerCtx)
+	}()
+	<-reconcilerCtx.Done()
+	<-reconDone
+
+	// After reconciler run, container must still be absent (not recreated).
+	psCmd := exec.Command("docker", "compose",
+		"-p", projectID, "-f", composeFile, "ps", "--services", "--filter", "status=running")
+	psOut, _ := psCmd.Output()
+	if len(psOut) > 0 {
+		t.Errorf("reconciler recreated containers for desired=stopped project — spurious up detected: %s", psOut)
+	}
+	t.Log("confirmed: reconciler did not recreate containers for desired=stopped project")
 }
 
 // TestReconciler_BackoffAfterFailure verifies the backoff state machine
