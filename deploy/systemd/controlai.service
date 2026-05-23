@@ -5,7 +5,10 @@ After=network.target docker.service
 Requires=docker.service
 
 [Service]
-Type=notify
+# Type=exec waits for ExecStart to be exec'd (no sd_notify required).
+# Switch to Type=notify + add daemon.SdNotify(daemon.SdNotifyReady) in the
+# Go code if/when stricter readiness signalling is needed.
+Type=exec
 User=controlai
 Group=controlai
 # Optional: place env overrides (e.g. CONTROLAI_CA_KEY_ENCRYPTION_KEY) here

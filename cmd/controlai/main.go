@@ -952,7 +952,7 @@ After=network.target docker.service
 Requires=docker.service
 
 [Service]
-Type=notify
+Type=exec
 User=controlai
 Group=controlai
 EnvironmentFile=-/etc/controlai/env
