@@ -1,0 +1,10 @@
+# controlai — mosquitto ACL for site {{.Site.ID}}
+# Generated — do not edit manually.
+# Only the ingestor CN may subscribe to the tenant/site topic hierarchy.
+# All other principals are denied.
+
+# Ingestor identity: CN = controlai-ingestor-{{.Site.ID}}
+user controlai-ingestor-{{.Site.ID}}
+topic read {{.Site.TenantID}}/{{.Site.ID}}/#
+
+# Deny all other access (default deny is implicit but we make it explicit)

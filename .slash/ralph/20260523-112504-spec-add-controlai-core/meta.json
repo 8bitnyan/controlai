@@ -1,0 +1,18 @@
+{
+  "runId": "20260523-112504-spec-add-controlai-core",
+  "mode": "spec",
+  "changeId": "add-controlai-core",
+  "maxIterations": 30,
+  "startedAt": "2026-05-23T02:25:04.810Z",
+  "status": "RUNNING",
+  "currentIteration": 1,
+  "batchId": "ralph_20260523-112504-spec-add-controlai-core",
+  "projectDir": "/Users/8bitnyan/Documents/ThinkTank/controlai.ralph-20260523-112504-spec-add-controlai-core",
+  "worktreeAutoCreated": true,
+  "worktree": "/Users/8bitnyan/Documents/ThinkTank/controlai.ralph-20260523-112504-spec-add-controlai-core",
+  "branch": "ralph/20260523-112504-spec-add-controlai-core",
+  "branchAutoCreated": true,
+  "modelRotation": [
+    "anthropic/claude-sonnet-4-6"
+  ]
+}

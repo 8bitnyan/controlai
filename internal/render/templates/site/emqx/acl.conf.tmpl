@@ -1,0 +1,7 @@
+%% controlai — EMQX ACL for site {{.Site.ID}}
+%% Generated — do not edit manually.
+%% Only the ingestor CN may subscribe to the site topic hierarchy.
+
+{allow, {user, "controlai-ingestor-{{.Site.ID}}"}, subscribe, ["{{.Site.TenantID}}/{{.Site.ID}}/+/+"]}.
+{allow, {user, "controlai-ingestor-{{.Site.ID}}"}, subscribe, ["$share/{{.Site.ID}}/{{.Site.TenantID}}/{{.Site.ID}}/+/+"]}.
+{deny, all}.

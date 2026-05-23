@@ -1,0 +1,42 @@
+version: "3.9"
+# controlai site compose — broker: mosquitto
+# Tenant: {{.Site.TenantID}}  Site: {{.Site.ID}}
+
+services:
+  broker:
+    image: eclipse-mosquitto:2
+    container_name: {{.Site.TenantID}}-{{.Site.ID}}-broker
+    restart: unless-stopped
+    volumes:
+      - ./deploy/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./deploy/acl.conf:/mosquitto/config/acl.conf:ro
+      - ./deploy/certs/active/ca.crt:/mosquitto/certs/ca.crt:ro
+      - ./deploy/certs/active/server.crt:/mosquitto/certs/server.crt:ro
+      - ./deploy/certs/active/server.key:/mosquitto/certs/server.key:ro
+      - broker-data:/mosquitto/data
+      - broker-log:/mosquitto/log
+    networks:
+      - {{.Site.TenantID}}-net
+      - controlai-edge
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+    labels:
+      com.docker.compose.project: {{.Site.TenantID}}-{{.Site.ID}}
+      controlai.tenant: "{{.Site.TenantID}}"
+      controlai.site: "{{.Site.ID}}"
+
+networks:
+  {{.Site.TenantID}}-net:
+    name: {{.Site.TenantID}}-net
+    external: true
+  controlai-edge:
+    name: controlai-edge
+    external: true
+
+volumes:
+  broker-data:
+    name: {{.Site.TenantID}}-{{.Site.ID}}-broker-data
+  broker-log:
+    name: {{.Site.TenantID}}-{{.Site.ID}}-broker-log

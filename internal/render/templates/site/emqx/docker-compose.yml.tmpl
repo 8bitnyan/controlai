@@ -1,0 +1,43 @@
+version: "3.9"
+# controlai site compose — broker: EMQX
+# Tenant: {{.Site.TenantID}}  Site: {{.Site.ID}}
+
+services:
+  broker:
+    image: emqx/emqx:5.7.0
+    container_name: {{.Site.TenantID}}-{{.Site.ID}}-broker
+    restart: unless-stopped
+    environment:
+      EMQX_NODE__NAME: emqx@{{.Site.TenantID}}-{{.Site.ID}}-broker
+      EMQX_CLUSTER__DISCOVERY_STRATEGY: static
+    volumes:
+      - ./deploy/emqx.conf:/opt/emqx/etc/emqx.conf:ro
+      - ./deploy/acl.conf:/opt/emqx/etc/acl.conf:ro
+      - ./deploy/api_keys.bootstrap:/opt/emqx/etc/api_keys.bootstrap:ro
+      - ./deploy/certs/active/ca.crt:/opt/emqx/etc/certs/ca.crt:ro
+      - ./deploy/certs/active/server.crt:/opt/emqx/etc/certs/server.crt:ro
+      - ./deploy/certs/active/server.key:/opt/emqx/etc/certs/server.key:ro
+      - broker-data:/opt/emqx/data
+    networks:
+      - {{.Site.TenantID}}-net
+      - controlai-edge
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    labels:
+      com.docker.compose.project: {{.Site.TenantID}}-{{.Site.ID}}
+      controlai.tenant: "{{.Site.TenantID}}"
+      controlai.site: "{{.Site.ID}}"
+
+networks:
+  {{.Site.TenantID}}-net:
+    name: {{.Site.TenantID}}-net
+    external: true
+  controlai-edge:
+    name: controlai-edge
+    external: true
+
+volumes:
+  broker-data:
+    name: {{.Site.TenantID}}-{{.Site.ID}}-broker-data

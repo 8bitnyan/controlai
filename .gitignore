@@ -1,0 +1,34 @@
+# Build outputs
+controlai
+controlai-ingest
+dist/
+
+# Go
+*.test
+*.out
+vendor/
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# Runtime data
+/var/lib/controlai/
+/var/run/controlai.sock
+/var/backups/controlai/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test fixtures (generated)
+testdata/golden-rendered/
+
+# golangci-lint cache
+.golangci-lint/

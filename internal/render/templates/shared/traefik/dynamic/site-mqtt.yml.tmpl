@@ -1,0 +1,17 @@
+{{- if .Site}}
+tcp:
+  routers:
+    mqtt-{{.Site.TenantID}}-{{.Site.ID}}:
+      entryPoints:
+        - mqtt
+      rule: "HostSNI(`{{.Site.SNIHostname}}`)"
+      service: broker-{{.Site.TenantID}}-{{.Site.ID}}
+      tls:
+        passthrough: true
+
+  services:
+    broker-{{.Site.TenantID}}-{{.Site.ID}}:
+      loadBalancer:
+        servers:
+          - address: "{{.Site.TenantID}}-{{.Site.ID}}-broker:8883"
+{{- end}}
