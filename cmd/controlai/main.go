@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"controlai/internal/audit"
+	"controlai/internal/backup"
 	"controlai/internal/daemon"
 	"controlai/internal/log"
 	migrateyaml "controlai/internal/migrate/yaml"
@@ -62,6 +64,8 @@ func main() {
 		pkiCmd(),
 		tokenCmd(),
 		applyCmd(),
+		backupCmd(),
+		installCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -249,9 +253,17 @@ per-site MQTT SNI routes written by the reconciler.`,
 				return fmt.Errorf("start shared: %w", err)
 			}
 			fmt.Println("Shared Traefik container started.")
-			fmt.Println("  :80  → HTTP entrypoint")
-			fmt.Println("  :443 → HTTPS entrypoint")
-			fmt.Println("  :8883 → MQTT/TLS entrypoint (SNI passthrough)")
+
+			// Verify ports are actually reachable (task 8.1).
+			fmt.Println("Verifying port reachability...")
+			if err := verifyPortsReachable(cmd.Context()); err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
+				fmt.Println("  Traefik may still be starting; retry in a few seconds.")
+			} else {
+				fmt.Println("  :80  → HTTP entrypoint    ✓")
+				fmt.Println("  :443 → HTTPS entrypoint   ✓")
+				fmt.Println("  :8883 → MQTT/TLS SNI passthrough ✓")
+			}
 			return nil
 		},
 	}
@@ -260,6 +272,50 @@ per-site MQTT SNI routes written by the reconciler.`,
 
 	cmd.AddCommand(initCmd)
 	return cmd
+}
+
+// verifyPortsReachable dials :80, :443, and :8883 with exponential backoff
+// to confirm Traefik is listening after `shared init`. Returns nil if all
+// three ports accept a TCP connection within ~30 seconds (task 8.1).
+func verifyPortsReachable(ctx context.Context) error {
+	ports := []string{"80", "443", "8883"}
+	const maxWait = 30 * time.Second
+	const baseDelay = 500 * time.Millisecond
+
+	unreachable := make(map[string]bool, len(ports))
+	for _, p := range ports {
+		unreachable[p] = true
+	}
+
+	deadline := time.Now().Add(maxWait)
+	delay := baseDelay
+	for time.Now().Before(deadline) {
+		for port := range unreachable {
+			d := &net.Dialer{Timeout: 1 * time.Second}
+			conn, err := d.DialContext(ctx, "tcp", "127.0.0.1:"+port)
+			if err == nil {
+				conn.Close()
+				delete(unreachable, port)
+			}
+		}
+		if len(unreachable) == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+		if delay < 5*time.Second {
+			delay *= 2
+		}
+	}
+
+	var missing []string
+	for p := range unreachable {
+		missing = append(missing, ":"+p)
+	}
+	return fmt.Errorf("ports not reachable after %s: %v", maxWait, missing)
 }
 
 // ─── tenant commands ──────────────────────────────────────────────────────────
@@ -646,6 +702,207 @@ func apiPost(path string, body any) error {
 	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// ─── backup ──────────────────────────────────────────────────────────────────
+
+func backupCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "backup", Short: "Manage per-tenant backups"}
+
+	runCmd := &cobra.Command{
+		Use:   "run <tenant-id>",
+		Short: "Run an immediate pg_dump backup for a tenant",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tenantID := args[0]
+			mgr := &backup.Manager{DataDir: flagDataDir}
+			outPath, err := mgr.Run(cmd.Context(), tenantID)
+			if err != nil {
+				return fmt.Errorf("backup failed: %w", err)
+			}
+			fmt.Printf("Backup written: %s\n", outPath)
+			return nil
+		},
+	}
+
+	lsCmd := &cobra.Command{
+		Use:   "ls <tenant-id>",
+		Short: "List existing backup archives for a tenant",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tenantID := args[0]
+			mgr := &backup.Manager{DataDir: flagDataDir}
+			paths, err := mgr.List(tenantID)
+			if err != nil {
+				return err
+			}
+			if len(paths) == 0 {
+				fmt.Println("No backups found.")
+				return nil
+			}
+			for _, p := range paths {
+				info, err := os.Stat(p)
+				if err != nil {
+					fmt.Println(p)
+					continue
+				}
+				fmt.Printf("%-50s  %s\n", p, info.ModTime().UTC().Format("2006-01-02 15:04:05 UTC"))
+			}
+			return nil
+		},
+	}
+
+	cmd.AddCommand(runCmd, lsCmd)
+	return cmd
+}
+
+// ─── install ─────────────────────────────────────────────────────────────────
+
+// installCmd sets up the systemd unit file, system user, and file permissions.
+func installCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "install",
+		Short: "Install controlai as a systemd service (requires root)",
+		Long: `Copies the systemd unit file to /etc/systemd/system/controlai.service,
+creates the 'controlai' system user and group, creates /var/lib/controlai
+and /var/run directories with correct ownership, and enables the service.
+
+Invoke as root (or via sudo).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Determine binary path.
+			self, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("determine executable path: %w", err)
+			}
+
+			steps := []struct {
+				desc string
+				run  func() error
+			}{
+				{
+					"create controlai system user/group",
+					func() error {
+						// Idempotent: ignore errors if already exists.
+						_ = runShell("groupadd", "--system", "controlai")
+						_ = runShell("useradd", "--system", "--no-create-home",
+							"--gid", "controlai",
+							"--shell", "/usr/sbin/nologin",
+							"--comment", "controlai daemon",
+							"controlai")
+						return nil
+					},
+				},
+				{
+					"create data directories",
+					func() error {
+						dirs := []string{
+							"/var/lib/controlai",
+							"/var/lib/controlai/tenants",
+							"/var/lib/controlai/shared",
+							"/var/backups/controlai",
+						}
+						for _, d := range dirs {
+							if err := os.MkdirAll(d, 0o750); err != nil {
+								return fmt.Errorf("mkdir %s: %w", d, err)
+							}
+						}
+						// chown data dir to controlai:controlai
+						_ = runShell("chown", "-R", "controlai:controlai", "/var/lib/controlai")
+						_ = runShell("chown", "-R", "controlai:controlai", "/var/backups/controlai")
+						return nil
+					},
+				},
+				{
+					"install binary to /usr/local/bin/controlai",
+					func() error {
+						// Only copy if source != destination.
+						dst := "/usr/local/bin/controlai"
+						if self == dst {
+							return nil
+						}
+						return runShell("install", "-m", "0755", "-o", "root", "-g", "root", self, dst)
+					},
+				},
+				{
+					"write systemd unit file",
+					func() error {
+						unit := systemdServiceUnit()
+						return os.WriteFile("/etc/systemd/system/controlai.service", []byte(unit), 0o644)
+					},
+				},
+				{
+					"write systemd backup service template",
+					func() error {
+						unit := backup.SystemdBackupServiceUnit()
+						return os.WriteFile("/etc/systemd/system/controlai-backup@.service", []byte(unit), 0o644)
+					},
+				},
+				{
+					"reload systemd and enable controlai.service",
+					func() error {
+						if err := runShell("systemctl", "daemon-reload"); err != nil {
+							return err
+						}
+						return runShell("systemctl", "enable", "controlai.service")
+					},
+				},
+			}
+
+			for _, s := range steps {
+				fmt.Printf("  • %s...\n", s.desc)
+				if err := s.run(); err != nil {
+					return fmt.Errorf("%s: %w", s.desc, err)
+				}
+			}
+			fmt.Println("\ncontrolai installed successfully.")
+			fmt.Println("  Start the daemon with: systemctl start controlai")
+			fmt.Println("  View logs with:        journalctl -u controlai -f")
+			return nil
+		},
+	}
+}
+
+// systemdServiceUnit returns the content of the controlai.service unit file.
+func systemdServiceUnit() string {
+	return `[Unit]
+Description=controlai — multi-tenant IoT data-pipeline control plane
+Documentation=https://github.com/your-org/controlai
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=notify
+User=controlai
+Group=controlai
+EnvironmentFile=-/etc/controlai/env
+ExecStart=/usr/local/bin/controlai daemon start
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/controlai /var/run /var/backups/controlai
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+`
+}
+
+// runShell runs a shell command, discarding output. Used only by installCmd.
+func runShell(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %v: %w (output: %s)", name, args, err, string(out))
 	}
 	return nil
 }
