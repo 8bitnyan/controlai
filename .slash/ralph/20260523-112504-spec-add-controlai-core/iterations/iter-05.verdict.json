@@ -1,0 +1,12 @@
+{
+  "iteration": 5,
+  "verdict": "NOT_DONE",
+  "reason": "Iteration 5 successfully landed 5 of 7 previously-missing integration tests and port reachability verification, breaking the stagnation; however, two critical end-to-end integration tests (8.5 SNI routing, 13.1 full provision→apply→modify→downlink cycle) remain unimplemented and are new blockers.",
+  "missing": [
+    "Task 8.5: Integration test for MQTT SNI routing (bring up shared + 2 sites on *.controlai.local, assert MQTT connections route to correct broker via SNI; still marked [ ] in tasks.md)",
+    "Task 13.1: End-to-end integration test (mosquitto/low/uni + EMQX/mid/bi, telemetry rows published and stored, bi-mode downlink works, broker swap succeeds, retention change applies; still marked [ ] in tasks.md)",
+    "Task 12.2: controlai install command implementation (deploy/install.sh script is present but the `controlai install` CLI command that invokes it is missing from main.go)",
+    "Task 12.4: README runbook (partially done—has Install, First Tenant, First Site, Retention Change, Broker Swap, Capacity Check, Backup, Uninstall; missing verification of reconciler convergence after manual docker compose down scenario)"
+  ],
+  "lensHint": "Stagnation broken: 5 prior missing items now done (8.1 port verify, 6.9 ingest tests, 7.6 recon tests, 9.8 daemon tests, 10.5 measure-rss.sh). Next must complete critical path: Task 8.5 (SNI routing integration test with real docker) then Task 13.1 (full end-to-end scenario with provision/apply/modify/downlink/broker-swap/retention-change). These are the final acceptance criteria for spec compliance."
+}

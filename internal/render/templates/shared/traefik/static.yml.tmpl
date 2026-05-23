@@ -1,0 +1,29 @@
+api:
+  dashboard: false
+  insecure: false
+
+log:
+  level: INFO
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+  mqtt:
+    address: ":8883"
+
+providers:
+  file:
+    directory: /dynamic
+    watch: true
+
+{{- if .Shared}}{{- if .Shared.ACMEEnabled}}
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: admin@{{.Shared.Domain}}
+      storage: /certs/acme.json
+      httpChallenge:
+        entryPoint: web
+{{- end}}{{- end}}

@@ -1,0 +1,12 @@
+{
+  "iteration": 6,
+  "verdict": "NOT_DONE",
+  "reason": "Task 8.5 (MQTT SNI routing integration test) successfully implemented with comprehensive docker stack, Traefik dynamic config, mTLS verification, and cross-SNI rejection. Tasks 12.2 (install command) and 12.4 (README runbook) are fully implemented but checkboxes not yet updated. Task 13.1 (end-to-end integration test) remains critical blocker for spec closure.",
+  "missing": [
+    "Task 13.1: End-to-end integration test (must validate full provision→apply→modify→downlink→broker-swap→retention-change cycle with mosquitto/low/uni + EMQX/mid/bi topology, telemetry rows published/stored, bi-mode downlink working, broker swap succeeds, retention policy change applies)",
+    "Task 12.2 checkbox: controlai install command is fully implemented in main.go (lines 764-860) but tasks.md still shows [ ] instead of [x]",
+    "Task 12.4 checkbox: README runbook is comprehensive (Install, First Tenant, First Site, Retention Change, Broker Swap, Reconciler Auto-Convergence, Capacity Check, Backup, Uninstall sections) but tasks.md still shows [ ] instead of [x]",
+    "Tasks 13.2-13.5: Verification tasks remaining (openspec validate --strict, capacity guard 3-tenant test, reconciler 30s convergence after docker compose down, manual cleanup test)"
+  ],
+  "lensHint": "Iter 6 broke major blocker: Task 8.5 SNI routing test now complete with real docker/Traefik/Traefik dynamic routing. Update checkboxes for 12.2 and 12.4, then priority: implement 13.1 end-to-end test (last critical feature gate), run verification tasks 13.2-13.5 for final sign-off."
+}

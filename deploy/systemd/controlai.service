@@ -1,0 +1,29 @@
+[Unit]
+Description=controlai — multi-tenant IoT data-pipeline control plane
+Documentation=https://github.com/your-org/controlai
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=notify
+User=controlai
+Group=controlai
+# Optional: place env overrides (e.g. CONTROLAI_CA_KEY_ENCRYPTION_KEY) here
+EnvironmentFile=-/etc/controlai/env
+ExecStart=/usr/local/bin/controlai daemon start
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/controlai /var/run /var/backups/controlai
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  traefik:
+    image: traefik:v3.0
+    container_name: controlai-traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8883:8883"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/controlai/shared/traefik/static.yml:/traefik.yml:ro
+      - /var/lib/controlai/shared/traefik/dynamic:/dynamic:ro
+      - traefik-certs:/certs
+    networks:
+      - controlai-edge
+    labels:
+      com.docker.compose.project: controlai-shared
+
+networks:
+  controlai-edge:
+    name: controlai-edge
+    driver: bridge
+
+volumes:
+  traefik-certs:

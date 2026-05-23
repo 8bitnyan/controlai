@@ -1,0 +1,34 @@
+version: "3.9"
+
+services:
+  tsdb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: {{.Tenant.ID}}-tsdb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "{{.Creds.SuperuserName}}"
+      POSTGRES_PASSWORD: "{{.Creds.SuperuserPass}}"
+      POSTGRES_DB: telemetry
+    volumes:
+      - tsdb-data:/var/lib/postgresql/data
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    networks:
+      - {{.Tenant.ID}}-net
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    labels:
+      com.docker.compose.project: {{.Tenant.ID}}-tsdb
+      controlai.tenant: "{{.Tenant.ID}}"
+
+networks:
+  {{.Tenant.ID}}-net:
+    name: {{.Tenant.ID}}-net
+    driver: bridge
+
+volumes:
+  tsdb-data:
+    name: {{.Tenant.ID}}-tsdb-data

@@ -1,0 +1,43 @@
+{
+  "iter": 5,
+  "startedAt": "2026-05-23T03:53:05.238Z",
+  "endedAt": "2026-05-23T04:06:23.842Z",
+  "durationMs": 798604,
+  "sessionId": "ses_1ad08ea1effeXofukT95cEnfzl",
+  "headBefore": "e00d3a49605bff4842e066b16c231cfac7b98c65",
+  "headAfter": "8182285db0e6db441d493742f2ffcbe11ffdfb21",
+  "commitSha": "8182285db0e6db441d493742f2ffcbe11ffdfb21",
+  "autoCommit": false,
+  "filesChanged": [
+    ".slash/ralph/20260523-112504-spec-add-controlai-core/SCOPE.md",
+    ".slash/ralph/20260523-112504-spec-add-controlai-core/iterations/iter-04.json",
+    ".slash/ralph/20260523-112504-spec-add-controlai-core/iterations/iter-04.verdict.json",
+    ".slash/ralph/20260523-112504-spec-add-controlai-core/meta.json",
+    ".slash/ralph/20260523-112504-spec-add-controlai-core/task-map.json",
+    "README.md",
+    "cmd/controlai/main.go",
+    "deploy/install/install.sh",
+    "deploy/systemd/controlai-backup@.service",
+    "deploy/systemd/controlai.service",
+    "internal/backup/pgdump.go",
+    "internal/daemon/integration_test.go",
+    "internal/recon/integration_test.go",
+    "scripts/measure-rss.sh",
+    "services/ingest/integration_test.go"
+  ],
+  "declaredScope": [],
+  "markedTasks": [
+    "10.5",
+    "11.1",
+    "12.1",
+    "12.3"
+  ],
+  "skippedTasks": [],
+  "validateExit": 0,
+  "tasksDone": 66,
+  "tasksTotal": 77,
+  "model": "anthropic/claude-sonnet-4-6",
+  "linesAdded": 2035,
+  "linesDeleted": 20,
+  "agentStatus": "completed"
+}
