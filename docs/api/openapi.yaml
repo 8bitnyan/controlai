@@ -524,14 +524,39 @@ paths:
           - `<tenant_id>-<site_id>-stop` — stop a site
     post:
       summary: Write desired state and trigger a reconciler tick
+      description: |
+        Triggers convergence for the given compose project. When `?wait=N` is
+        provided the handler blocks for up to N seconds (max 300) polling the
+        Docker engine until all containers are running, then returns HTTP 200
+        with `converged:true`. Without `?wait`, returns HTTP 202 immediately.
       operationId: apply
       tags: [System]
       security:
         - {}
         - bearerAuth: []
+      parameters:
+        - name: wait
+          in: query
+          schema: { type: integer, default: 0, maximum: 300 }
+          description: "Seconds to block polling for convergence. 0 = fire-and-forget (202)."
       responses:
-        "202":
-          description: Accepted — reconciler will converge
+        "200":
+          description: Converged within wait window
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApplyResponse' }
+              schema:
+                type: object
+                properties:
+                  selector:  { type: string }
+                  converged: { type: boolean, example: true }
+        "202":
+          description: Accepted (fire-and-forget or wait timeout reached)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  selector:  { type: string }
+                  status:    { type: string, example: "applying" }
+                  converged: { type: boolean }
+                  reason:    { type: string, description: "Last mismatch reason when converged=false" }

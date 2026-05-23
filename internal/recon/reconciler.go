@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"controlai/internal/audit"
+	"controlai/internal/pki"
 	"controlai/internal/render"
 	"controlai/internal/runner"
 	"controlai/internal/store/sqlite"
@@ -21,6 +22,10 @@ type Config struct {
 	DataDir string
 	// BasePeriod is the nominal loop interval (default 30 s).
 	BasePeriod time.Duration
+	// LastTick is an optional pointer updated after every tick for the health endpoint.
+	LastTick *time.Time
+	// MasterKey is the AES-256-GCM master key for PKI operations; nil disables PKI rotation.
+	MasterKey []byte
 }
 
 // backoffLadder defines the retry delay sequence (design D11).
@@ -94,6 +99,11 @@ func (r *Reconciler) tick(ctx context.Context) {
 		return
 	}
 
+	// Run PKI EnsureTrustFiles for every active site on this tick.
+	if len(r.cfg.MasterKey) > 0 {
+		r.ensureAllTrustFiles(ctx)
+	}
+
 	for _, desired := range desiredList {
 		pid := desired.ProjectID
 		ps, ok := r.states[pid]
@@ -135,12 +145,39 @@ func (r *Reconciler) tick(ctx context.Context) {
 			ps.nextRetry = time.Time{}
 		}
 	}
+
+	// Update last-tick timestamp for the health endpoint.
+	if r.cfg.LastTick != nil {
+		*r.cfg.LastTick = time.Now()
+	}
 }
 
 // reconcileProject drives a single project toward desired state.
 func (r *Reconciler) reconcileProject(ctx context.Context, desired sqlite.DesiredStateRow, composeFile string) error {
 	switch desired.State {
 	case "running":
+		// Check actual state via Docker SDK before running compose up.
+		// Only call up if containers are missing or any are not running.
+		needsUp := true
+		if r.docker != nil {
+			containers, err := r.docker.ListByProject(ctx, desired.ProjectID)
+			if err == nil && len(containers) > 0 {
+				allRunning := true
+				for _, c := range containers {
+					if c.State != "running" {
+						allRunning = false
+						break
+					}
+				}
+				if allRunning {
+					// Everything is already running — no action needed this tick.
+					needsUp = false
+				}
+			}
+		}
+		if !needsUp {
+			return nil
+		}
 		// Write Traefik dynamic config before bringing up the site so that the
 		// SNI route is present by the time the broker is reachable.
 		if desired.SiteID != "" && desired.TenantID != "" {
@@ -160,6 +197,13 @@ func (r *Reconciler) reconcileProject(ctx context.Context, desired sqlite.Desire
 			Success:  true,
 		})
 	case "stopped":
+		// Check if containers are already stopped/absent before running down.
+		if r.docker != nil {
+			containers, err := r.docker.ListByProject(ctx, desired.ProjectID)
+			if err == nil && len(containers) == 0 {
+				return nil // nothing running, desired=stopped is already satisfied
+			}
+		}
 		_, err := runner.Down(ctx, desired.ProjectID, composeFile)
 		if err != nil {
 			return err
@@ -181,6 +225,126 @@ func (r *Reconciler) reconcileProject(ctx context.Context, desired sqlite.Desire
 	}
 	return nil
 }
+
+// ensureAllTrustFiles runs PKI rotation checks for every active site.
+// Rotation is triggered when any cert is: missing, fails CA verification,
+// expires within 30 days, or (server cert) has SAN drift.
+func (r *Reconciler) ensureAllTrustFiles(ctx context.Context) {
+	sites, err := r.store.ListAllSites(ctx)
+	if err != nil {
+		r.log.Warn("reconciler: list sites for PKI check failed", "err", err)
+		return
+	}
+	for _, site := range sites {
+		if site.Status != "active" {
+			continue
+		}
+		tenant, err := r.store.GetTenant(ctx, site.TenantID)
+		if err != nil {
+			continue
+		}
+		certDir := filepath.Join(r.cfg.DataDir, "tenants", site.TenantID, "sites", site.ID, "deploy", "certs", "active")
+		caRow, err := r.store.GetCACert(ctx, site.ID)
+		if err != nil {
+			// No CA yet — skip (CA is created at site provisioning time).
+			continue
+		}
+		sniHostname := site.ID + "." + site.TenantID + "." + tenant.Domain
+		cfg := pki.TrustFileConfig{
+			SiteID:      site.ID,
+			TenantID:    site.TenantID,
+			CertDir:     certDir,
+			SNIHostname: sniHostname,
+			MasterKey:   r.cfg.MasterKey,
+			CACertPEM:   []byte(caRow.CertPEM),
+			CAKeyEnc:    caRow.KeyEnc,
+			CAKeyNonce:  caRow.KeyNonce,
+		}
+		result, err := pki.EnsureTrustFiles(cfg)
+		if err != nil {
+			r.log.Warn("reconciler: PKI EnsureTrustFiles failed", "site", site.ID, "err", err)
+			continue
+		}
+		if result.ServerRotated || result.IngestorRotated {
+			r.log.Info("reconciler: PKI certs rotated", "site", site.ID,
+				"server_rotated", result.ServerRotated, "ingestor_rotated", result.IngestorRotated)
+			_ = r.audit.Emit(ctx, audit.Event{
+				Kind:     audit.KindPKIRotate,
+				TenantID: site.TenantID,
+				SiteID:   site.ID,
+				Detail:   fmt.Sprintf(`{"server_rotated":%t,"ingestor_rotated":%t}`, result.ServerRotated, result.IngestorRotated),
+				Success:  true,
+			})
+			// For EMQX sites, the broker listener needs restarting after cert rotation.
+			// The restart is done via EMQX REST API; in MVP we rely on container restart.
+			if site.BrokerKind == "emqx" && result.ServerRotated {
+				r.log.Info("reconciler: triggering compose restart for EMQX after cert rotation", "site", site.ID)
+				composeFile := filepath.Join(r.cfg.DataDir, "tenants", site.TenantID, "sites", site.ID, "docker-compose.yml")
+				if _, err := runner.Restart(ctx, site.TenantID+"-"+site.ID, composeFile, "broker"); err != nil {
+					r.log.Warn("reconciler: EMQX broker restart failed", "site", site.ID, "err", err)
+					_ = r.audit.Emit(ctx, audit.Event{
+						Kind:     audit.KindBrokerRestart,
+						TenantID: site.TenantID,
+						SiteID:   site.ID,
+						Detail:   fmt.Sprintf(`{"err":%q}`, err.Error()),
+						Success:  false,
+					})
+				} else {
+					_ = r.audit.Emit(ctx, audit.Event{
+						Kind:     audit.KindBrokerRestart,
+						TenantID: site.TenantID,
+						SiteID:   site.ID,
+						Detail:   `{}`,
+						Success:  true,
+					})
+				}
+			}
+		}
+	}
+}
+
+// ensureInitialTrustFiles is called at daemon start for all active sites.
+// It is a thin wrapper around ensureAllTrustFiles.
+func (r *Reconciler) EnsureInitialTrustFiles(ctx context.Context) {
+	if len(r.cfg.MasterKey) > 0 {
+		r.ensureAllTrustFiles(ctx)
+	}
+}
+
+// ListByProjectOrNil safely lists containers; returns nil on error.
+func listByProjectOrNil(ctx context.Context, docker *runner.DockerClient, projectID string) []runner.ContainerSummary {
+	if docker == nil {
+		return nil
+	}
+	cs, err := docker.ListByProject(ctx, projectID)
+	if err != nil {
+		return nil
+	}
+	return cs
+}
+
+// IsConverged returns true when all containers in the given project are running.
+// Returns (false, nil) when docker is nil or the project has no containers.
+func (r *Reconciler) IsConverged(ctx context.Context, projectID string) (bool, error) {
+	if r.docker == nil {
+		return false, nil
+	}
+	containers, err := r.docker.ListByProject(ctx, projectID)
+	if err != nil {
+		return false, fmt.Errorf("list containers for %s: %w", projectID, err)
+	}
+	if len(containers) == 0 {
+		return false, nil
+	}
+	for _, c := range containers {
+		if c.State != "running" {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+
 
 // composeFile returns the expected compose file path for a desired-state row.
 func (r *Reconciler) composeFile(d sqlite.DesiredStateRow) string {

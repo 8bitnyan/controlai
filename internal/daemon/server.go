@@ -50,6 +50,15 @@ type Config struct {
 	DockerReachable func(ctx context.Context) bool
 	// StartedAt is the daemon start timestamp.
 	StartedAt time.Time
+	// DockerListByProject lists containers for a project via the Docker SDK.
+	// Used by the blocking apply handler to poll for convergence.
+	DockerListByProject func(ctx context.Context, projectID string) ([]ContainerState, error)
+}
+
+// ContainerState is a minimal view of a Docker container's state.
+type ContainerState struct {
+	Name  string
+	State string // "running" | "exited" | etc.
 }
 
 // Server is the REST API server.
@@ -598,7 +607,86 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	if s.recon != nil {
 		go s.recon.Trigger(context.Background())
 	}
+
+	// Optional blocking wait: ?wait=<seconds> (max 300).
+	// When provided, the handler polls until all containers are running or timeout.
+	if waitStr := r.URL.Query().Get("wait"); waitStr != "" {
+		waitSecs, _ := strconv.Atoi(waitStr)
+		if waitSecs > 0 {
+			if waitSecs > 300 {
+				waitSecs = 300
+			}
+			deadline := time.Now().Add(time.Duration(waitSecs) * time.Second)
+			s.pollConvergence(r.Context(), w, selector, deadline)
+			return
+		}
+	}
+
 	writeJSON(w, http.StatusAccepted, map[string]string{"selector": selector, "status": "applying"})
+}
+
+// pollConvergence polls the Docker SDK until all containers for projectID are
+// running (converged) or the deadline elapses. It writes either a 200 OK with
+// converged:true or a 202 Accepted with converged:false and the last mismatch reason.
+func (s *Server) pollConvergence(ctx context.Context, w http.ResponseWriter, projectID string, deadline time.Time) {
+	if s.cfg.DockerListByProject == nil {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"selector":  projectID,
+			"converged": false,
+			"reason":    "docker SDK not available",
+		})
+		return
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var lastReason string
+	for {
+		containers, err := s.cfg.DockerListByProject(ctx, projectID)
+		if err == nil && len(containers) > 0 {
+			allRunning := true
+			for _, c := range containers {
+				if c.State != "running" {
+					allRunning = false
+					lastReason = fmt.Sprintf("container %s is in state %s", c.Name, c.State)
+					break
+				}
+			}
+			if allRunning {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"selector":  projectID,
+					"converged": true,
+				})
+				return
+			}
+		} else if err != nil {
+			lastReason = "docker list error: " + err.Error()
+		} else {
+			lastReason = "no containers found for project"
+		}
+
+		if time.Now().After(deadline) {
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"selector":  projectID,
+				"converged": false,
+				"reason":    lastReason,
+			})
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"selector":  projectID,
+				"converged": false,
+				"reason":    "request cancelled",
+			})
+			return
+		case <-ticker.C:
+			// poll again
+		}
+	}
 }
 
 // ─── Token auth middleware (TCP transport only) ───────────────────────────────

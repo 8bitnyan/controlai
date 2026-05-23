@@ -1,6 +1,6 @@
 # Build outputs
-controlai
-controlai-ingest
+/controlai
+/controlai-ingest
 dist/
 
 # Go
