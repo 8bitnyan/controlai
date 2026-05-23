@@ -1,21 +1,6 @@
 # SCOPE — 20260523-112504-spec-add-controlai-core
 
 _Cross-iteration memory. Last 3 turns only. ralph-agent reads this in Step 1.5._
-<!-- iter 2 -->
-## iter 2
-### what landed:
-- 26 file(s): .slash/ralph/20260523-112504-spec-add-controlai-core/SCOPE.md, .slash/ralph/20260523-112504-spec-add-controlai-core/iterations/iter-01.json, .slash/ralph/20260523-112504-spec-add-controlai-core/iterations/iter-01.verdict.json, …(+23)
-- +1874 / -233 lines @ e2bad59a (agent=completed)
-### lens hint:
-tasks.md unchecked items; spec acceptance criteria; edge cases of the touched surface
-### missing (from verifier):
-- Task 9.8: Unit tests for daemon API handlers (GET/POST/DELETE handlers for tenants, sites, health, capacity, publish, logs, apply)
-- Task 6.8: Dockerfile for controlai-ingest (multi-stage, distroless base image)
-- Task 6.9: Unit tests for ingest codec, batcher, downlink MQTT path; integration test with real MQTT + Postgres
-- Task 7.6: Unit tests for reconciler backoff state machine; integration tests for provision → apply → modify → restart cycle
-- Task 8.1, 8.3, 8.5: Shared init command, reconciler wiring for traefik dynamic files, and integration test for MQTT SNI routing
-- Task 13.1: End-to-end integration test validating entire provision → apply → modify → downlink publish cycle
-
 <!-- iter 3 -->
 ## iter 3
 ### what landed:
@@ -46,3 +31,16 @@ tasks.md unchecked items; spec acceptance criteria; edge cases of the touched su
 - Task 8.5: Integration test for MQTT SNI routing not implemented (still marked [ ] in tasks.md)
 - Task 13.1: End-to-end integration test not implemented (still marked [ ]; should validate entire provision → apply → modify → downlink publish cycle)
 - Task 10.5: scripts/measure-rss.sh and CI assertion test not implemented (still marked [ ])
+
+<!-- iter 5 -->
+## iter 5
+### what landed:
+- 15 file(s): .slash/ralph/20260523-112504-spec-add-controlai-core/SCOPE.md, .slash/ralph/20260523-112504-spec-add-controlai-core/iterations/iter-04.json, .slash/ralph/20260523-112504-spec-add-controlai-core/iterations/iter-04.verdict.json, …(+12)
+- +2035 / -20 lines @ 8182285d (agent=completed)
+### lens hint:
+tasks.md unchecked items; spec acceptance criteria; edge cases of the touched surface
+### missing (from verifier):
+- Task 8.5: Integration test for MQTT SNI routing (bring up shared + 2 sites on *.controlai.local, assert MQTT connections route to correct broker via SNI; still marked [ ] in tasks.md)
+- Task 13.1: End-to-end integration test (mosquitto/low/uni + EMQX/mid/bi, telemetry rows published and stored, bi-mode downlink works, broker swap succeeds, retention change applies; still marked [ ] in tasks.md)
+- Task 12.2: controlai install command implementation (deploy/install.sh script is present but the `controlai install` CLI command that invokes it is missing from main.go)
+- Task 12.4: README runbook (partially done—has Install, First Tenant, First Site, Retention Change, Broker Swap, Capacity Check, Backup, Uninstall; missing verification of reconciler convergence after manual docker compose down scenario)

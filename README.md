@@ -96,38 +96,77 @@ controlai site list tnt_acme-corp
 
 ### Retention Change
 
-Retention is set at tenant creation time. To change retention for an existing
-tenant (deferred full reconciler support; manual procedure):
+Use the PATCH endpoint (or REST API directly) to change a tenant's retention.
+controlai re-renders the init.sql and related TSDB files; the reconciler
+applies the retention policy change on the next tick.
 
 ```bash
-# 1. Edit the tenant YAML directly
-sudo nano /var/lib/controlai/tenants/tnt_acme-corp/tenant.yaml
-# Change the `retention` field (1m|1h|1d|7d|30d)
+# Via CLI (uses daemon REST API)
+curl --unix-socket /var/run/controlai.sock -X PATCH \
+  -H 'Content-Type: application/json' \
+  -d '{"retention":"30d"}' \
+  http://controlai/v1/tenants/tnt_acme-corp
 
-# 2. Re-apply the tenant TSDB project
-controlai apply tnt_acme-corp-tsdb
-
-# 3. Connect to TSDB and update the retention policy manually
-docker exec -it tnt_acme-corp-tsdb-1 psql -U postgres controlai \
-  -c "SELECT remove_retention_policy('telemetry');" \
-  -c "SELECT add_retention_policy('telemetry', INTERVAL '30 days');"
+# Verify the new retention is applied in TSDB (within 60 s)
+docker exec tnt_acme-corp-tsdb psql -U controlai_admin telemetry \
+  -c "SELECT * FROM timescaledb_information.policies WHERE hypertable_name='telemetry';"
 ```
+
+Allowed retention values: `1m` `1h` `1d` `7d` `30d`.
+Compression is automatically enabled for `7d` and `30d`.
 
 ### Broker Swap (mosquitto → EMQX)
 
+Use the PATCH endpoint to change a site's configuration. controlai re-renders
+the broker compose files; the reconciler restarts only the affected site
+containers (not other sites or the TSDB).
+
 ```bash
-# 1. Stop the site
+# 1. Update the site via PATCH (daemon re-renders and triggers reconciler)
+curl --unix-socket /var/run/controlai.sock -X PATCH \
+  -H 'Content-Type: application/json' \
+  -d '{"direction":"bi"}' \
+  http://controlai/v1/tenants/tnt_acme-corp/sites/ste_seoul
+
+# 2. Wait for convergence (reconciler detects hash drift, restarts broker+ingest)
+controlai site apply tnt_acme-corp ste_seoul --timeout 120
+
+# 3. Verify new broker is running
+docker ps | grep ste_seoul
+```
+
+### Reconciler Auto-Convergence
+
+The reconciler runs every 30 seconds and self-heals any drifted containers.
+If a site's containers are manually stopped, the reconciler recreates them:
+
+```bash
+# Simulate failure: manually bring down a site's containers
+docker compose -p tnt_acme-corp-ste_seoul \
+  -f /var/lib/controlai/tenants/tnt_acme-corp/sites/ste_seoul/docker-compose.yml \
+  down
+
+# Wait up to 30 s — the reconciler detects the absence and runs compose up.
+# Monitor reconciler activity in the audit log:
+curl --unix-socket /var/run/controlai.sock \
+  'http://controlai/v1/health' | jq .reconciler_last_tick
+
+# Verify the site is running again (within 30 s + compose startup time)
+docker ps | grep ste_seoul
+# Expected: broker + ingest container(s) visible
+
+# You can also watch the daemon logs:
+journalctl -u controlai -f | grep reconciler
+```
+
+To prevent the reconciler from recreating a site (e.g., for planned maintenance):
+
+```bash
+# Set desired state to stopped — reconciler will not recreate containers
 controlai site stop tnt_acme-corp ste_seoul
 
-# 2. Edit site.yaml to change broker.kind
-sudo nano /var/lib/controlai/tenants/tnt_acme-corp/sites/ste_seoul/site.yaml
-# Set broker.kind: emqx, throughput: low (or mid), and re-check the codec.
-
-# 3. Validate
-controlai migrate --dry-run
-
-# 4. Apply and wait
-controlai site apply tnt_acme-corp ste_seoul
+# Resume when ready
+controlai site start tnt_acme-corp ste_seoul
 ```
 
 ### Capacity Check

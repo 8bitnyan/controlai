@@ -157,7 +157,8 @@ func (r *Reconciler) reconcileProject(ctx context.Context, desired sqlite.Desire
 	switch desired.State {
 	case "running":
 		// Check actual state via Docker SDK before running compose up.
-		// Only call up if containers are missing or any are not running.
+		// Only call up if containers are missing, any are not running, or the
+		// config hash has drifted since the last successful apply.
 		needsUp := true
 		if r.docker != nil {
 			containers, err := r.docker.ListByProject(ctx, desired.ProjectID)
@@ -170,8 +171,20 @@ func (r *Reconciler) reconcileProject(ctx context.Context, desired sqlite.Desire
 					}
 				}
 				if allRunning {
-					// Everything is already running — no action needed this tick.
-					needsUp = false
+					// Containers are up. Check for config drift using the
+					// combined hash stored after the last successful apply.
+					// If desired hash is empty (legacy row), fall back to skip.
+					if desired.ConfigHash == "" {
+						needsUp = false
+					} else {
+						actualHash, hashErr := r.store.GetCombinedHash(ctx, desired.ProjectID)
+						if hashErr == nil && actualHash == desired.ConfigHash {
+							// Config unchanged and containers running — no action.
+							needsUp = false
+						}
+						// If actualHash not found or differs → needsUp stays true
+						// so compose up re-applies the changed config.
+					}
 				}
 			}
 		}
@@ -188,6 +201,11 @@ func (r *Reconciler) reconcileProject(ctx context.Context, desired sqlite.Desire
 		_, err := runner.Up(ctx, desired.ProjectID, composeFile)
 		if err != nil {
 			return err
+		}
+		// After a successful up, record the applied config hash so the next
+		// tick can detect whether the config has drifted without running compose.
+		if desired.ConfigHash != "" {
+			_ = r.store.UpsertCombinedHash(ctx, desired.ProjectID, desired.ConfigHash)
 		}
 		_ = r.audit.Emit(ctx, audit.Event{
 			Kind:     audit.KindReconcilerSuccess,

@@ -12,9 +12,11 @@ type Kind string
 
 const (
 	KindTenantCreate      Kind = "tenant.create"
+	KindTenantUpdate      Kind = "tenant.update"
 	KindTenantDelete      Kind = "tenant.delete"
 	KindTenantMigrate     Kind = "tenant.migrate"
 	KindSiteCreate        Kind = "site.create"
+	KindSiteUpdate        Kind = "site.update"
 	KindSiteDelete        Kind = "site.delete"
 	KindSiteStart         Kind = "site.start"
 	KindSiteStop          Kind = "site.stop"

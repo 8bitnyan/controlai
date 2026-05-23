@@ -27,6 +27,7 @@ import (
 	"controlai/internal/audit"
 	"controlai/internal/capacity"
 	"controlai/internal/recon"
+	"controlai/internal/render"
 	"controlai/internal/store/sqlite"
 	"controlai/internal/version"
 )
@@ -63,17 +64,18 @@ type ContainerState struct {
 
 // Server is the REST API server.
 type Server struct {
-	cfg    Config
-	store  *sqlite.Store
-	audit  audit.Emitter
-	recon  *recon.Reconciler
-	router chi.Router
-	log    *slog.Logger
+	cfg      Config
+	store    *sqlite.Store
+	audit    audit.Emitter
+	recon    *recon.Reconciler
+	renderer *render.Renderer
+	router   chi.Router
+	log      *slog.Logger
 }
 
 // New constructs a new Server.
 func New(cfg Config, store *sqlite.Store, ae audit.Emitter, rec *recon.Reconciler, log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, store: store, audit: ae, recon: rec, log: log}
+	s := &Server{cfg: cfg, store: store, audit: ae, recon: rec, renderer: render.New(), log: log}
 	s.router = s.buildRouter()
 	return s
 }
@@ -268,6 +270,16 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+
+	// Render TSDB compose project and write to disk. The reconciler needs the
+	// compose file to exist before it can bring up containers.
+	if _, err := renderAndWriteTSDB(r.Context(), tenantID, s.store, s.renderer, s.cfg.DataDir); err != nil {
+		// Non-fatal: log and continue — the operator can re-trigger via apply.
+		s.log.Warn("render TSDB on create failed", "tenant", tenantID, "err", err)
+	} else if s.recon != nil {
+		go s.recon.Trigger(context.Background())
+	}
+
 	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindTenantCreate, TenantID: tenantID, Success: true})
 	writeJSON(w, http.StatusCreated, map[string]string{"id": tenantID})
 }
@@ -296,13 +308,77 @@ func (s *Server) handleGetTenant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
-	// PATCH placeholder — returns 501 until retention-change reconciler is wired
-	writeErr(w, http.StatusNotImplemented, fmt.Errorf("PATCH /v1/tenants/{id} not yet implemented"))
+	tid := chi.URLParam(r, "tid")
+	var req struct {
+		Retention string `json:"retention"`
+		Name      string `json:"name"`
+		Domain    string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	// Validate retention if provided.
+	if req.Retention != "" {
+		validRet := map[string]bool{"1m": true, "1h": true, "1d": true, "7d": true, "30d": true}
+		if !validRet[req.Retention] {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid retention %q: must be one of 1m 1h 1d 7d 30d", req.Retention))
+			return
+		}
+		if err := s.store.UpdateTenantRetention(r.Context(), tid, req.Retention); err != nil {
+			if err == sqlite.ErrNotFound {
+				writeErr(w, http.StatusNotFound, fmt.Errorf("tenant %q not found", tid))
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	// Re-render TSDB init.sql and related files so the retention policy change
+	// propagates to the compose project on the next reconciler tick.
+	if req.Retention != "" {
+		if _, err := renderAndWriteTSDB(r.Context(), tid, s.store, s.renderer, s.cfg.DataDir); err != nil {
+			s.log.Warn("re-render TSDB after retention change failed", "tenant", tid, "err", err)
+		} else if s.recon != nil {
+			go s.recon.Trigger(context.Background())
+		}
+	}
+	_ = s.audit.Emit(r.Context(), audit.Event{
+		Kind: audit.KindTenantUpdate, TenantID: tid,
+		Detail:  fmt.Sprintf(`{"retention":%q}`, req.Retention),
+		Success: true,
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleDeleteTenant(w http.ResponseWriter, r *http.Request) {
 	tid := chi.URLParam(r, "tid")
 	purge := r.URL.Query().Get("purge") == "true"
+
+	// Set desired_state=stopped for the TSDB project and all sites before
+	// changing SQLite status, so the reconciler stops containers on the next tick.
+	// With purge=true, we use "removed" so the reconciler also tears down volumes
+	// (volume removal is handled separately; "removed" stops the project).
+	desiredState := "stopped"
+	if purge {
+		desiredState = "removed"
+	}
+	_ = s.store.UpsertDesiredState(r.Context(), sqlite.DesiredStateRow{
+		ProjectID: tid + "-tsdb", TenantID: tid, State: desiredState,
+	})
+	// Stop all sites under this tenant.
+	if sites, err := s.store.ListSitesByTenant(r.Context(), tid); err == nil {
+		for _, site := range sites {
+			_ = s.store.UpsertDesiredState(r.Context(), sqlite.DesiredStateRow{
+				ProjectID: tid + "-" + site.ID, TenantID: tid, SiteID: site.ID,
+				State: desiredState,
+			})
+		}
+	}
+	if s.recon != nil {
+		go s.recon.Trigger(context.Background())
+	}
+
 	if err := s.store.DeleteTenant(r.Context(), tid, purge); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -381,6 +457,15 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+
+	// Render broker+ingest compose project and write to disk so the reconciler
+	// can converge immediately on the next tick.
+	if _, err := renderAndWriteSite(r.Context(), siteID, s.store, s.renderer, s.cfg.DataDir); err != nil {
+		s.log.Warn("render site on create failed", "site", siteID, "err", err)
+	} else if s.recon != nil {
+		go s.recon.Trigger(context.Background())
+	}
+
 	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindSiteCreate, TenantID: tid, SiteID: siteID, Success: true})
 	writeJSON(w, http.StatusCreated, map[string]string{"id": siteID})
 }
@@ -410,13 +495,82 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
-	writeErr(w, http.StatusNotImplemented, fmt.Errorf("PATCH /v1/tenants/{tid}/sites/{sid} not yet implemented"))
+	tid := chi.URLParam(r, "tid")
+	sid := chi.URLParam(r, "sid")
+	var req struct {
+		PayloadCodec string `json:"payload_codec"`
+		Direction    string `json:"direction"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+
+	// Validate direction if provided.
+	if req.Direction != "" {
+		if req.Direction != "uni" && req.Direction != "bi" {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid direction %q: must be uni or bi", req.Direction))
+			return
+		}
+	}
+	// Validate codec if provided.
+	if req.PayloadCodec != "" {
+		validCodecs := map[string]bool{"cbor": true, "json": true, "raw_passthrough": true}
+		if !validCodecs[req.PayloadCodec] {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid payload_codec %q: must be cbor, json, or raw_passthrough", req.PayloadCodec))
+			return
+		}
+	}
+
+	if req.Direction == "" && req.PayloadCodec == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("at least one of payload_codec or direction must be specified"))
+		return
+	}
+
+	// Apply the update.
+	if err := s.store.UpdateSite(r.Context(), sid, req.PayloadCodec, req.Direction); err != nil {
+		if err == sqlite.ErrNotFound {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("site %q not found", sid))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// Re-render site compose files so the reconciler detects the hash change
+	// and restarts only the affected containers.
+	if _, err := renderAndWriteSite(r.Context(), sid, s.store, s.renderer, s.cfg.DataDir); err != nil {
+		s.log.Warn("re-render site after update failed", "site", sid, "err", err)
+	} else if s.recon != nil {
+		go s.recon.Trigger(context.Background())
+	}
+
+	_ = s.audit.Emit(r.Context(), audit.Event{
+		Kind: audit.KindSiteUpdate, TenantID: tid, SiteID: sid,
+		Detail:  fmt.Sprintf(`{"codec":%q,"direction":%q}`, req.PayloadCodec, req.Direction),
+		Success: true,
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	sid := chi.URLParam(r, "sid")
 	tid := chi.URLParam(r, "tid")
 	purge := r.URL.Query().Get("purge") == "true"
+
+	// Set desired_state=stopped (or removed on purge) before deleting from SQLite
+	// so the reconciler stops the site's containers on the next tick.
+	desiredState := "stopped"
+	if purge {
+		desiredState = "removed"
+	}
+	_ = s.store.UpsertDesiredState(r.Context(), sqlite.DesiredStateRow{
+		ProjectID: tid + "-" + sid, TenantID: tid, SiteID: sid, State: desiredState,
+	})
+	if s.recon != nil {
+		go s.recon.Trigger(context.Background())
+	}
+
 	if err := s.store.DeleteSite(r.Context(), sid, purge); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

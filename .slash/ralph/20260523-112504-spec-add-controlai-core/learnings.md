@@ -35,3 +35,14 @@ _2026-05-23T03:16:00.795Z_
 Previous 1 iteration(s) had agent failures; iteration 2 ran cleanly. Counter reset.
 
 
+
+_2026-05-23T04:32:38.831Z_
+
+## [driver] iteration 6 agent timeout
+
+Session: `ses_1acfb97deffex74fhhuwK4D5KS`
+Model: `anthropic/claude-sonnet-4-6`
+Consecutive agent-failure count: 1/3
+Detail: Ralph session did not finish within 1500s
+
+

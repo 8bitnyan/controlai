@@ -129,6 +129,20 @@ func (s *Store) UpdateTenantStatus(ctx context.Context, id, status string) error
 	return err
 }
 
+// UpdateTenantRetention changes a tenant's retention policy.
+func (s *Store) UpdateTenantRetention(ctx context.Context, id, retention string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE tenants SET retention=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`, retention, id)
+	if err != nil {
+		return fmt.Errorf("update tenant retention: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ─── Sites ───────────────────────────────────────────────────────────────────
 
 // SiteRow is the flat SQLite representation of a site.
@@ -237,6 +251,48 @@ func (s *Store) UpdateSiteStatus(ctx context.Context, id, status string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE sites SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`, status, id)
 	return err
+}
+
+// UpdateSite updates mutable site fields: payload_codec and direction.
+// Pass empty string to leave a field unchanged.
+func (s *Store) UpdateSite(ctx context.Context, id, codec, direction string) error {
+	// Build SET clauses only for non-empty values; order of clauses and args must match.
+	var setClauses []string
+	var args []any
+	if codec != "" {
+		setClauses = append(setClauses, "payload_codec=?")
+		args = append(args, codec)
+	}
+	if direction != "" {
+		setClauses = append(setClauses, "direction=?")
+		args = append(args, direction)
+	}
+	if len(args) == 0 {
+		return nil // nothing to update
+	}
+	setClauses = append(setClauses, "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+	args = append(args, id)
+	q := "UPDATE sites SET " + strings.Join(setClauses, ", ") + " WHERE id=?"
+	res, err := s.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("update site: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpsertCombinedHash stores a combined hash for all rendered files of a project.
+// Uses a special sentinel file path "_combined" in the actual_state_cache table.
+func (s *Store) UpsertCombinedHash(ctx context.Context, projectID, hash string) error {
+	return s.UpsertFileHash(ctx, projectID, "_combined", hash)
+}
+
+// GetCombinedHash retrieves the stored combined hash for a project.
+func (s *Store) GetCombinedHash(ctx context.Context, projectID string) (string, error) {
+	return s.GetFileHash(ctx, projectID, "_combined")
 }
 
 // ─── Desired state ────────────────────────────────────────────────────────────

@@ -91,18 +91,18 @@
 - [x] 10.2 Implement `Predict(plan, memKB)` that sums tenant TSDB + site RSS against 85 % of usable RAM.
 - [x] 10.3 Wire into admission path: `POST /v1/tenants` and `POST /v1/tenants/{tid}/sites` call `admissionCheck`, reject HTTP 409 on overflow.
 - [x] 10.4 `controlai capacity` CLI returns projected breakdown; `GET /v1/capacity` with what-if support.
-- [ ] 10.5 Add `scripts/measure-rss.sh`; CI test asserts checked-in table matches measured baseline ±15 %.
+- [x] 10.5 Add `scripts/measure-rss.sh`; CI test asserts checked-in table matches measured baseline ±15 %.
 
 ## 11. Backup (capability: tenant-management)
-- [ ] 11.1 Implement `internal/backup/pgdump.go`: per-tenant `pg_dump` via `docker compose exec`.
+- [x] 11.1 Implement `internal/backup/pgdump.go`: per-tenant `pg_dump` via `docker compose exec`.
 - [ ] 11.2 Implement daily systemd timer template rendered on tenant create.
 - [ ] 11.3 Output compressed dumps to `/var/backups/controlai/<tenant>/<YYYYMMDD>.sql.gz`; keep last 7.
 - [ ] 11.4 CLI: `controlai backup run <tenant>` and `controlai backup ls <tenant>`.
 
 ## 12. Systemd integration + production hardening
-- [ ] 12.1 Author `deploy/systemd/controlai.service` (Type=notify, restart=on-failure).
+- [x] 12.1 Author `deploy/systemd/controlai.service` (Type=notify, restart=on-failure).
 - [ ] 12.2 Implement `controlai install` command: unit file, `controlai` system user, file perms.
-- [ ] 12.3 Author `deploy/install.sh` for one-shot operator install.
+- [x] 12.3 Author `deploy/install.sh` for one-shot operator install.
 - [ ] 12.4 README runbook: install, first tenant, first site, retention change, broker swap, capacity check, uninstall.
 
 ## 13. Verification
