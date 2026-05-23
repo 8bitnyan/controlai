@@ -58,10 +58,11 @@ fi
 log "downloading controlai ${VERSION}"
 curl -fsSL -o /tmp/controlai.tgz "https://github.com/${GITHUB_RELEASES_REPO}/releases/download/${VERSION}/controlai_${VERSION#v}_linux_amd64.tar.gz"
 tar -xzf /tmp/controlai.tgz -C /tmp/
-install -m 0755 /tmp/controlai /usr/local/bin/controlai
 
-log "running packaged installer"
-CONTROLAI_BINARY=/usr/local/bin/controlai bash /tmp/install.sh
+log "running packaged installer (installs binary + systemd units + creates user)"
+# install.sh moves /tmp/controlai → /usr/local/bin/controlai. Do NOT pre-install
+# here: install.sh's `install` command would error if src and dst are identical.
+CONTROLAI_BINARY=/tmp/controlai bash /tmp/install.sh
 
 log "loading CA key from SSM"
 KEY="$(aws ssm get-parameter --region ${AWS_REGION} --name ${SSM_PARAM_NAME} --with-decryption --query Parameter.Value --output text)"

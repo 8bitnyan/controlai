@@ -160,14 +160,27 @@ fi
 
 TF_DATA_DIR="${STATE_DIR}/.terraform" tofu -chdir="${REPO_ROOT}/deploy/aws/terraform" apply -state="../.state/terraform.tfstate" -auto-approve -var "aws_region=${AWS_REGION}" -var "deployment_name=${DEPLOYMENT_NAME}" -var "instance_type=${INSTANCE_TYPE}" -var "enable_eip=${ENABLE_EIP}" -var "ssh_key_name=${SSH_KEY_NAME}" -var "ca_key_ssm_parameter_arn=${SSM_PARAMETER_ARN}" -var "controlai_version=${CONTROLAI_VERSION}" -var "user_data=$(cat "${USER_DATA_FILE}")" -var 'extra_tags={}'
 
-instance_id="$(TF_DATA_DIR="${STATE_DIR}/.terraform" tofu -chdir="${REPO_ROOT}/deploy/aws/terraform" output -raw instance_id)"
-public_ip="$(TF_DATA_DIR="${STATE_DIR}/.terraform" tofu -chdir="${REPO_ROOT}/deploy/aws/terraform" output -raw public_ip)"
-ami_id="$(TF_DATA_DIR="${STATE_DIR}/.terraform" tofu -chdir="${REPO_ROOT}/deploy/aws/terraform" output -raw ami_id)"
-az="$(TF_DATA_DIR="${STATE_DIR}/.terraform" tofu -chdir="${REPO_ROOT}/deploy/aws/terraform" output -raw availability_zone)"
+tofu_output() {
+  TF_DATA_DIR="${STATE_DIR}/.terraform" tofu -chdir="${REPO_ROOT}/deploy/aws/terraform" output -state="../.state/terraform.tfstate" -raw "$1"
+}
+instance_id="$(tofu_output instance_id)"
+public_ip="$(tofu_output public_ip)"
+ami_id="$(tofu_output ami_id)"
+az="$(tofu_output availability_zone)"
 
 jq -n --arg deployment_name "${DEPLOYMENT_NAME}" --arg aws_region "${AWS_REGION}" --arg instance_id "${instance_id}" --arg public_ip "${public_ip}" --arg ami_id "${ami_id}" --arg ssm_parameter_arn "${SSM_PARAMETER_ARN}" --arg ssh_key_name "${SSH_KEY_NAME}" --arg ssh_key_path_local "${SSH_KEY_PATH_LOCAL}" --arg created_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" --arg controlai_version "${CONTROLAI_VERSION}" --argjson ssh_key_created_by_up "${SSH_KEY_CREATED_BY_UP}" '{deployment_name:$deployment_name,aws_region:$aws_region,instance_id:$instance_id,public_ip:$public_ip,ami_id:$ami_id,ssm_parameter_arn:$ssm_parameter_arn,ssh_key_name:$ssh_key_name,ssh_key_path_local:$ssh_key_path_local,ssh_key_created_by_up:$ssh_key_created_by_up,created_at:$created_at,controlai_version:$controlai_version}' >"${STATE_FILE}"
 
-aws --region "${AWS_REGION}" ec2 wait instance-status-ok --instance-ids "${instance_id}"
+# `aws ec2 wait instance-status-ok` has an intermittent XML parsing bug in some
+# botocore versions; poll directly instead. Timeout: 60 attempts × 10s = 10 min.
+log "waiting for instance status-ok (manual poll)"
+for _i in $(seq 1 60); do
+  st="$(aws --region "${AWS_REGION}" ec2 describe-instance-status --instance-ids "${instance_id}" --query 'InstanceStatuses[0].[InstanceStatus.Status,SystemStatus.Status]' --output text 2>/dev/null || echo "pending pending")"
+  case "${st}" in
+    "ok"*"ok") log "instance status-ok after ~$((_i * 10))s"; break ;;
+  esac
+  if [ "${_i}" = 60 ]; then fail "instance did not reach status-ok within 10 min: ${st}"; fi
+  sleep 10
+done
 
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o UserKnownHostsFile=/dev/null)
 [ -n "${SSH_KEY_PATH_LOCAL}" ] && ssh_opts+=(-i "${SSH_KEY_PATH_LOCAL}")
