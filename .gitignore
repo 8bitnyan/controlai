@@ -38,3 +38,4 @@ testdata/golden-rendered/
 
 deploy/aws/.state/
 !deploy/aws/.state/.gitkeep
+deploy/aws/terraform/.terraform/

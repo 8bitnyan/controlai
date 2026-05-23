@@ -12,7 +12,7 @@
 - [x] 2.1 Add `.goreleaser.yaml` building `controlai` (from `./cmd/controlai`) for `linux/amd64`; archive as `controlai_{{ .Version }}_linux_amd64.tar.gz` containing the binary + `deploy/install/install.sh` + `deploy/systemd/*.service` + `LICENSE` + `README.md`.
 - [x] 2.2 Inject `LDFLAGS` for version (`-X main.version={{.Version}}`) consistent with existing `Makefile`.
 - [x] 2.3 Add `.github/workflows/release.yml` triggered on `push: tags: ['v*']` — checkout, setup-go, run `goreleaser release --clean`. Uses `GITHUB_TOKEN`.
-- [ ] 2.4 Cut a `v0.0.1` test tag on a fork or branch + verify the release artifact lands in GitHub Releases.
+- [x] 2.4 Cut a `v0.0.1` test tag on a fork or branch + verify the release artifact lands in GitHub Releases.
 
 ## 3. Terraform module (`deploy/aws/terraform/`)
 

@@ -98,7 +98,7 @@ systemctl status controlai
 | `INSTANCE_TYPE` | No | `t3.medium` | EC2 instance type. For PoC (~5 tenants): use `t3.medium`. For higher load: `t3.large`, `t3.xlarge`, etc. (See cost notes below.) |
 | `CONTROLAI_VERSION` | No | `latest` | Version to install. Options: `latest` (resolves at boot via GitHub API) or pinned (e.g., `v0.0.1`, `v1.2.3`). Must exist as a release on `GITHUB_RELEASES_REPO`. |
 | `ENABLE_EIP` | No | `false` | Set to `true` to allocate an Elastic IP (static public IP). Useful if you need the IP to persist across instance restarts. **Cost: ~$3.25/month if unused.** |
-| `GITHUB_RELEASES_REPO` | No | `controlai-iot/controlai` | GitHub repository (in format `org/repo`) from which to fetch the controlai binary. Override if deploying from a fork. |
+| `GITHUB_RELEASES_REPO` | No | `8bitnyan/controlai` | GitHub repository (in format `org/repo`) from which to fetch the controlai binary. Override if deploying from a fork. |
 | `SSH_KEY_NAME` | No | Auto-generated | Use an existing EC2 key pair by name. If unset, `up.sh` generates `${DEPLOYMENT_NAME}-key` and stores the private key at `~/.ssh/controlai-${DEPLOYMENT_NAME}.pem`. |
 
 ## Command-Line Flags
@@ -415,7 +415,7 @@ A: SSH in and pull the latest release:
 ssh ubuntu@<IP>
 cd /opt/controlai
 sudo systemctl stop controlai
-curl -fsSL -o /tmp/controlai.tgz https://github.com/controlai-iot/controlai/releases/download/v0.0.2/controlai_0.0.2_linux_amd64.tar.gz
+curl -fsSL -o /tmp/controlai.tgz https://github.com/8bitnyan/controlai/releases/download/v0.0.2/controlai_0.0.2_linux_amd64.tar.gz
 sudo tar -xzf /tmp/controlai.tgz -C /tmp/
 sudo install -m 0755 /tmp/controlai /usr/local/bin/controlai
 sudo systemctl start controlai
@@ -435,4 +435,4 @@ For issues or questions:
 1. Review the **Troubleshooting** section above.
 2. Check `journalctl` and `cloud-init-output.log` on the instance.
 3. Review `openspec/changes/add-aws-provisioning/design.md` for architecture context.
-4. Open an issue on the [GitHub repository](https://github.com/controlai-iot/controlai).
+4. Open an issue on the [GitHub repository](https://github.com/8bitnyan/controlai).

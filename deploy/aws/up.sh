@@ -11,7 +11,7 @@ DEPLOYMENT_NAME="${DEPLOYMENT_NAME:-controlai-poc}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-t3.medium}"
 CONTROLAI_VERSION="${CONTROLAI_VERSION:-latest}"
 ENABLE_EIP="${ENABLE_EIP:-false}"
-GITHUB_RELEASES_REPO="${GITHUB_RELEASES_REPO:-controlai-iot/controlai}"
+GITHUB_RELEASES_REPO="${GITHUB_RELEASES_REPO:-8bitnyan/controlai}"
 SSH_KEY_NAME="${SSH_KEY_NAME:-}"
 
 REPLACE=false
@@ -119,14 +119,16 @@ fi
 if [ -z "${SSH_KEY_NAME}" ]; then
   SSH_KEY_NAME="${DEPLOYMENT_NAME}-key"
   SSH_KEY_PATH_LOCAL="${HOME}/.ssh/controlai-${DEPLOYMENT_NAME}.pem"
-  if [ ! -f "${SSH_KEY_PATH_LOCAL}" ]; then
+  if [ "${DRY_RUN}" = true ]; then
+    log "[dry-run] would create EC2 key pair ${SSH_KEY_NAME} (skipped; no AWS calls in dry-run)"
+  elif [ ! -f "${SSH_KEY_PATH_LOCAL}" ]; then
     log "creating EC2 key pair ${SSH_KEY_NAME}"
     umask 077
     aws --region "${AWS_REGION}" ec2 create-key-pair --key-type ed25519 --key-name "${SSH_KEY_NAME}" --query 'KeyMaterial' --output text >"${SSH_KEY_PATH_LOCAL}"
     chmod 600 "${SSH_KEY_PATH_LOCAL}"
     SSH_KEY_CREATED_BY_UP=true
   fi
-else
+elif [ "${DRY_RUN}" = false ]; then
   aws --region "${AWS_REGION}" ec2 describe-key-pairs --key-names "${SSH_KEY_NAME}" >/dev/null
 fi
 
@@ -145,6 +147,7 @@ fi
 export CONTROLAI_VERSION DEPLOYMENT_NAME GITHUB_RELEASES_REPO AWS_REGION SSM_PARAM_NAME
 # Only substitute the five known provisioning variables; all other shell variables in the
 # bash section of user-data.yaml.tmpl (e.g. $KEY, $VERSION) must pass through unchanged.
+# shellcheck disable=SC2016  # single-quotes intentional: envsubst parses this list itself, no shell expansion wanted
 envsubst '$CONTROLAI_VERSION $DEPLOYMENT_NAME $GITHUB_RELEASES_REPO $AWS_REGION $SSM_PARAM_NAME' \
   <"${REPO_ROOT}/deploy/aws/user-data.yaml.tmpl" >"${USER_DATA_FILE}"
 
