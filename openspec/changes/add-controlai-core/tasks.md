@@ -63,7 +63,7 @@
 - [x] 8.2 Implement dynamic-config writer with atomic-rename pattern (`*.tmp` + `os.Rename`) in `render.WriteResults`; permissions set to 0640.
 - [x] 8.3 Wire reconciler to maintain `shared/traefik/dynamic/` files in lockstep with `sites` table.
 - [x] 8.4 ACME flag: `shared.traefik.acme=true` renders `certResolvers` in Traefik static config template.
-- [ ] 8.5 Integration test: bring up shared + 2 sites on `*.controlai.local`, assert MQTT SNI routing.
+- [x] 8.5 Integration test: bring up shared + 2 sites on `*.controlai.local`, assert MQTT SNI routing.
 
 ## 9. Daemon API (capability: daemon-api)
 - [x] 9.1 Implement `internal/daemon/server.go` with chi router; mount handlers under `/v1/` with request timeout and recovery middleware.

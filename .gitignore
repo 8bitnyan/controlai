@@ -32,3 +32,6 @@ testdata/golden-rendered/
 
 # golangci-lint cache
 .golangci-lint/
+
+# Ralph loop runtime state — managed by the driver, never commit.
+.slash/ralph/

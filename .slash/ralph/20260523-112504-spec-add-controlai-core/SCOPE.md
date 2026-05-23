@@ -1,19 +1,6 @@
 # SCOPE — 20260523-112504-spec-add-controlai-core
 
 _Cross-iteration memory. Last 3 turns only. ralph-agent reads this in Step 1.5._
-<!-- iter 5 -->
-## iter 5
-### what landed:
-- 15 file(s): .slash/ralph/20260523-112504-spec-add-controlai-core/SCOPE.md, .slash/ralph/20260523-112504-spec-add-controlai-core/iterations/iter-04.json, .slash/ralph/20260523-112504-spec-add-controlai-core/iterations/iter-04.verdict.json, …(+12)
-- +2035 / -20 lines @ 8182285d (agent=completed)
-### lens hint:
-tasks.md unchecked items; spec acceptance criteria; edge cases of the touched surface
-### missing (from verifier):
-- Task 8.5: Integration test for MQTT SNI routing (bring up shared + 2 sites on *.controlai.local, assert MQTT connections route to correct broker via SNI; still marked [ ] in tasks.md)
-- Task 13.1: End-to-end integration test (mosquitto/low/uni + EMQX/mid/bi, telemetry rows published and stored, bi-mode downlink works, broker swap succeeds, retention change applies; still marked [ ] in tasks.md)
-- Task 12.2: controlai install command implementation (deploy/install.sh script is present but the `controlai install` CLI command that invokes it is missing from main.go)
-- Task 12.4: README runbook (partially done—has Install, First Tenant, First Site, Retention Change, Broker Swap, Capacity Check, Backup, Uninstall; missing verification of reconciler convergence after manual docker compose down scenario)
-
 <!-- iter 6 -->
 ## iter 6
 ### what landed:
@@ -40,3 +27,13 @@ tasks.md unchecked items; spec acceptance criteria; edge cases of the touched su
 - Task 13.3: Capacity guard 3-tenant test not implemented (still marked [ ])
 - Task 13.4: Reconciler convergence after docker compose down not tested (still marked [ ])
 - Task 13.5: Manual cleanup (controlai tenant rm --purge) not verified (still marked [ ])
+
+<!-- iter 8 -->
+## iter 8
+### what landed:
+- 12 file(s): .slash/ralph/20260523-112504-spec-add-controlai-core/SCOPE.md, .slash/ralph/20260523-112504-spec-add-controlai-core/iterations/iter-07.json, .slash/ralph/20260523-112504-spec-add-controlai-core/iterations/iter-07.verdict.json, …(+9)
+- +645 / -68 lines @ f310d21d (agent=completed)
+### lens hint:
+tasks.md unchecked items; spec acceptance criteria; edge cases of the touched surface
+### missing (from verifier):
+- Task 13.1: End-to-end integration test remains docker-stubbed (not fixed in iter 8). Stubs DockerReachable and DockerListByProject; does NOT verify: (a) containers actually provisioned via docker compose, (b) telemetry rows published and stored in Postgres, (c) retention policies applied to TSDB, (d) broker swap succeeds with actual container restart. Spec scenarios in reconciler/ingest-service/timescale-provisioning require these outcomes to be tested.

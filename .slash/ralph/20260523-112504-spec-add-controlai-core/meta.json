@@ -4,7 +4,7 @@
   "changeId": "add-controlai-core",
   "maxIterations": 30,
   "startedAt": "2026-05-23T02:25:04.810Z",
-  "status": "RUNNING",
+  "status": "ABORTED",
   "currentIteration": 8,
   "batchId": "ralph_20260523-112504-spec-add-controlai-core",
   "projectDir": "/Users/8bitnyan/Documents/ThinkTank/controlai.ralph-20260523-112504-spec-add-controlai-core",
@@ -14,5 +14,7 @@
   "branchAutoCreated": true,
   "modelRotation": [
     "anthropic/claude-sonnet-4-6"
-  ]
+  ],
+  "abortReason": "user-stopped",
+  "completedAt": "2026-05-23T05:09:19.929Z"
 }
