@@ -1,0 +1,80 @@
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="//"
+
+--//
+Content-Type: text/cloud-config; charset="us-ascii"
+
+#cloud-config
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+  - unzip
+  - awscli
+write_files:
+  - path: /etc/controlai/env.template
+    owner: root:controlai
+    permissions: "0640"
+    content: |
+      CONTROLAI_CA_KEY_ENCRYPTION_KEY=
+
+--//
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+log() {
+  logger -t controlai-bootstrap "$1"
+  printf '[controlai-bootstrap] %s\n' "$1"
+}
+
+log "installing docker prerequisites"
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+
+cat >/etc/apt/sources.list.d/docker.sources <<'EOF_DOCKER_SOURCE'
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: noble
+Components: stable
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF_DOCKER_SOURCE
+
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker
+
+VERSION="${CONTROLAI_VERSION}"
+if [ "${CONTROLAI_VERSION}" = "latest" ]; then
+  VERSION="$(curl -fsSL "https://api.github.com/repos/${GITHUB_RELEASES_REPO}/releases/latest" | jq -r .tag_name)"
+fi
+
+log "downloading controlai ${VERSION}"
+curl -fsSL -o /tmp/controlai.tgz "https://github.com/${GITHUB_RELEASES_REPO}/releases/download/${VERSION}/controlai_${VERSION#v}_linux_amd64.tar.gz"
+tar -xzf /tmp/controlai.tgz -C /tmp/
+install -m 0755 /tmp/controlai /usr/local/bin/controlai
+
+log "running packaged installer"
+CONTROLAI_BINARY=/usr/local/bin/controlai bash /tmp/install.sh
+
+log "loading CA key from SSM"
+KEY="$(aws ssm get-parameter --region ${AWS_REGION} --name ${SSM_PARAM_NAME} --with-decryption --query Parameter.Value --output text)"
+cat >/etc/controlai/env <<EOF_CONTROLAI_ENV
+CONTROLAI_CA_KEY_ENCRYPTION_KEY=${KEY}
+EOF_CONTROLAI_ENV
+chown root:controlai /etc/controlai/env
+chmod 0640 /etc/controlai/env
+
+log "starting controlai"
+systemctl daemon-reload
+systemctl enable --now controlai
+
+echo "[controlai-bootstrap] complete"
+
+--//--

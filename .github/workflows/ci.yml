@@ -48,3 +48,29 @@ jobs:
         with:
           version: latest
           args: --timeout=5m
+
+  deploy-aws-lint:
+    name: deploy/aws lint (terraform fmt/validate + shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.6.2"
+
+      - name: tofu fmt -check
+        run: tofu -chdir=deploy/aws/terraform fmt -check -recursive
+
+      - name: tofu init (no backend)
+        run: tofu -chdir=deploy/aws/terraform init -backend=false -input=false
+
+      - name: tofu validate
+        run: tofu -chdir=deploy/aws/terraform validate
+
+      - name: shellcheck up.sh / down.sh
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: deploy/aws
+          severity: warning

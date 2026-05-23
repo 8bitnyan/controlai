@@ -35,3 +35,6 @@ testdata/golden-rendered/
 
 # Ralph loop runtime state — managed by the driver, never commit.
 .slash/ralph/
+
+deploy/aws/.state/
+!deploy/aws/.state/.gitkeep

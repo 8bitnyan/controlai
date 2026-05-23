@@ -70,6 +70,18 @@ controlai shared init --domain iot.example.com
 journalctl -u controlai -f
 ```
 
+### Deploy to AWS EC2 (quickstart)
+
+New to controlai? Provision a fully bootstrapped demo on AWS EC2 in one command:
+
+```bash
+AWS_REGION=us-east-1 ./deploy/aws/up.sh
+```
+
+This provisions an EC2 instance, installs Docker, downloads the controlai binary, and starts the daemon. See [docs/aws-deploy.md](docs/aws-deploy.md) for prerequisites, environment variables, troubleshooting, and teardown instructions.
+
+**Cost:** ~$35/month (t3.medium, 50 GB gp3). Stop the instance or run `./deploy/aws/down.sh` to cease charges.
+
 ### First Tenant
 
 ```bash
