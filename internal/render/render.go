@@ -17,6 +17,9 @@ import (
 	"text/template"
 )
 
+// Version of the compose spec used in all rendered docker-compose files.
+const ComposeSpecVersion = "3.9"
+
 //go:embed all:templates
 var templatesFS embed.FS
 
@@ -117,28 +120,48 @@ func (r *Renderer) RenderTenantTSDB(ctx RenderContext) ([]RenderResult, error) {
 
 // RenderSite renders the per-site broker + ingest compose files.
 // The broker subdirectory is selected based on ctx.Site.BrokerKind.
+// Ingest services are merged into the broker docker-compose template; no
+// separate ingest directory is rendered here.
 func (r *Renderer) RenderSite(ctx RenderContext) ([]RenderResult, error) {
 	if ctx.Site == nil {
 		return nil, fmt.Errorf("RenderSite: Site context is nil")
 	}
-	var results []RenderResult
-	// Broker-specific templates
+	// All site templates (broker config, ACL, merged docker-compose with ingest)
+	// live under site/<broker_kind>/. Templates that produce empty output are
+	// automatically skipped by renderDir.
 	brokerDir := "site/" + ctx.Site.BrokerKind
-	brokerResults, err := r.renderDir(brokerDir, ctx)
+	results, err := r.renderDir(brokerDir, ctx)
 	if err != nil {
-		return nil, fmt.Errorf("render broker %s: %w", ctx.Site.BrokerKind, err)
+		return nil, fmt.Errorf("render site %s/%s (broker=%s): %w",
+			ctx.Site.TenantID, ctx.Site.ID, ctx.Site.BrokerKind, err)
 	}
-	results = append(results, brokerResults...)
-	// Shared ingest template
-	ingestResults, err := r.renderDir("site/ingest", ctx)
-	if err != nil {
-		return nil, fmt.Errorf("render ingest: %w", err)
-	}
-	results = append(results, ingestResults...)
 	return results, nil
 }
 
-// RenderTraefikDynamic renders the per-site Traefik dynamic config files.
+// RenderTraefikDynamicForSite renders the per-site Traefik dynamic config and
+// names each output file as "<tenantID>-<siteID>-<baseName>.yml" so that
+// multiple sites' configs coexist in the shared dynamic directory without
+// overwriting each other.
+func (r *Renderer) RenderTraefikDynamicForSite(ctx RenderContext) ([]RenderResult, error) {
+	if ctx.Site == nil {
+		return nil, fmt.Errorf("RenderTraefikDynamicForSite: Site context is nil")
+	}
+	results, err := r.renderDir("shared/traefik/dynamic", ctx)
+	if err != nil {
+		return nil, fmt.Errorf("render traefik dynamic for %s/%s: %w",
+			ctx.Site.TenantID, ctx.Site.ID, err)
+	}
+	// Prefix each output filename with "<tenantID>-<siteID>-" so multiple sites
+	// can coexist in the Traefik dynamic directory.
+	prefix := ctx.Site.TenantID + "-" + ctx.Site.ID + "-"
+	for i := range results {
+		results[i].RelPath = prefix + filepath.Base(results[i].RelPath)
+	}
+	return results, nil
+}
+
+// RenderTraefikDynamic renders Traefik dynamic configs without per-site naming.
+// Prefer RenderTraefikDynamicForSite for site-scoped configs.
 func (r *Renderer) RenderTraefikDynamic(ctx RenderContext) ([]RenderResult, error) {
 	return r.renderDir("shared/traefik/dynamic", ctx)
 }
@@ -167,9 +190,15 @@ func (r *Renderer) renderDir(dir string, ctx RenderContext) ([]RenderResult, err
 			return fmt.Errorf("execute template %s: %w", path, err)
 		}
 		content := buf.Bytes()
+		// Skip templates that render to empty output (e.g. placeholder stubs that
+		// have been superseded by templates in subdirectories).
+		if len(bytes.TrimSpace(content)) == 0 {
+			return nil
+		}
 		h := sha256.Sum256(content)
-		// relPath strips the .tmpl suffix to produce the output filename.
-		relPath := strings.TrimSuffix(strings.TrimPrefix(path, dir+"/"), "")
+		// relPath strips the dir prefix and the .tmpl suffix to produce the
+		// output filename, preserving any intermediate subdirectory structure.
+		relPath := strings.TrimPrefix(path, dir+"/")
 		if strings.HasSuffix(relPath, ".tmpl") {
 			relPath = relPath[:len(relPath)-5]
 		}

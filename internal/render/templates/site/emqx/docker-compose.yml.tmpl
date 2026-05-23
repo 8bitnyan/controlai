@@ -1,6 +1,7 @@
 version: "3.9"
 # controlai site compose — broker: EMQX
 # Tenant: {{.Site.TenantID}}  Site: {{.Site.ID}}
+# Generated — do not edit manually.
 
 services:
   broker:
@@ -29,6 +30,45 @@ services:
       com.docker.compose.project: {{.Site.TenantID}}-{{.Site.ID}}
       controlai.tenant: "{{.Site.TenantID}}"
       controlai.site: "{{.Site.ID}}"
+
+{{- range $i := seq .Site.IngestReplicas}}
+  ingest-{{$i}}:
+    image: controlai-ingest:latest
+    container_name: {{$.Site.TenantID}}-{{$.Site.ID}}-ingest-{{$i}}
+    restart: unless-stopped
+    environment:
+      INGEST_TENANT_ID: "{{$.Site.TenantID}}"
+      INGEST_SITE_ID: "{{$.Site.ID}}"
+      INGEST_BROKER_KIND: "{{$.Site.BrokerKind}}"
+      INGEST_MQTT_BROKER: "broker:8883"
+      INGEST_MQTT_TOPIC: "{{$.Site.MQTTTopicFilter}}"
+      INGEST_PAYLOAD_CODEC: "{{$.Site.PayloadCodec}}"
+      INGEST_BATCH_SIZE: "{{$.Site.BatchSize}}"
+      INGEST_FLUSH_INTERVAL_MS: "{{$.Site.FlushIntervalMS}}"
+      INGEST_DIRECTION: "{{$.Site.Direction}}"
+      INGEST_TSDB_HOST: "{{$.Site.TenantID}}-tsdb"
+      INGEST_TSDB_PORT: "5432"
+      INGEST_TSDB_DB: "telemetry"
+      {{- if $.Creds}}
+      INGEST_TSDB_USER: "{{$.Creds.IngestName}}"
+      INGEST_TSDB_PASS: "{{$.Creds.IngestPass}}"
+      {{- end}}
+    volumes:
+      - /var/lib/controlai/tenants/{{$.Site.TenantID}}/sites/{{$.Site.ID}}/site.yaml:/etc/controlai/site.yaml:ro
+      - ./deploy/certs/active/ca.crt:/certs/ca.crt:ro
+      - ./deploy/certs/active/ingestor.crt:/certs/client.crt:ro
+      - ./deploy/certs/active/ingestor.key:/certs/client.key:ro
+    networks:
+      - {{$.Site.TenantID}}-net
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    labels:
+      com.docker.compose.project: {{$.Site.TenantID}}-{{$.Site.ID}}
+      controlai.tenant: "{{$.Site.TenantID}}"
+      controlai.site: "{{$.Site.ID}}"
+{{- end}}
 
 networks:
   {{.Site.TenantID}}-net:

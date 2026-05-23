@@ -5,7 +5,7 @@
   "maxIterations": 30,
   "startedAt": "2026-05-23T02:25:04.810Z",
   "status": "RUNNING",
-  "currentIteration": 1,
+  "currentIteration": 2,
   "batchId": "ralph_20260523-112504-spec-add-controlai-core",
   "projectDir": "/Users/8bitnyan/Documents/ThinkTank/controlai.ralph-20260523-112504-spec-add-controlai-core",
   "worktreeAutoCreated": true,

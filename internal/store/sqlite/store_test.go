@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"controlai/internal/store/sqlite"
 )
@@ -216,4 +217,124 @@ func TestMigrationFileExists(t *testing.T) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Errorf("migration file not found at %s", path)
 	}
+}
+
+func TestStoreCACertRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	// Create a tenant and site first (FK constraints).
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{ID: "tnt_pki", Domain: "pki.com", Retention: "7d", SchemaVersion: 1})
+	_ = store.CreateSite(ctx, sqlite.SiteRow{
+		ID: "ste_ca", TenantID: "tnt_pki",
+		BrokerKind: "mosquitto", Throughput: "low", Direction: "uni",
+		PayloadCodec: "cbor", LeafTTLDays: 365, SchemaVersion: 1,
+	})
+
+	row := sqlite.CACertRow{
+		SiteID:      "ste_ca",
+		CertPEM:     "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
+		KeyEnc:      []byte{0x01, 0x02, 0x03},
+		KeyNonce:    []byte{0x04, 0x05, 0x06},
+		Fingerprint: "abc123fingerprint",
+	}
+	// Use fixed times that avoid zero value.
+	row.NotBefore = parseTime(t, "2024-01-01T00:00:00Z")
+	row.NotAfter = parseTime(t, "2044-01-01T00:00:00Z")
+
+	if err := store.StoreCACert(ctx, row); err != nil {
+		t.Fatalf("StoreCACert: %v", err)
+	}
+
+	got, err := store.GetCACert(ctx, "ste_ca")
+	if err != nil {
+		t.Fatalf("GetCACert: %v", err)
+	}
+	if got.Fingerprint != row.Fingerprint {
+		t.Errorf("fingerprint mismatch: got %s, want %s", got.Fingerprint, row.Fingerprint)
+	}
+	if string(got.KeyEnc) != string(row.KeyEnc) {
+		t.Errorf("key_enc mismatch")
+	}
+}
+
+func TestGetCACert_NotFound(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	_, err := store.GetCACert(ctx, "ste_missing")
+	if err != sqlite.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestStoreCertAndRevoke(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{ID: "tnt_c", Domain: "c.com", Retention: "7d", SchemaVersion: 1})
+	_ = store.CreateSite(ctx, sqlite.SiteRow{
+		ID: "ste_c", TenantID: "tnt_c",
+		BrokerKind: "mosquitto", Throughput: "low", Direction: "uni",
+		PayloadCodec: "cbor", LeafTTLDays: 365, SchemaVersion: 1,
+	})
+
+	row := sqlite.CertRow{
+		SiteID:      "ste_c",
+		Kind:        "gateway",
+		CommonName:  "floor-1-pump",
+		CertPEM:     "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
+		Fingerprint: "deadbeef1234567890",
+		NotBefore:   parseTime(t, "2024-01-01T00:00:00Z"),
+		NotAfter:    parseTime(t, "2025-01-01T00:00:00Z"),
+	}
+	if err := store.StoreCert(ctx, row); err != nil {
+		t.Fatalf("StoreCert: %v", err)
+	}
+
+	// GetByFingerprint
+	got, err := store.GetCertByFingerprint(ctx, row.Fingerprint)
+	if err != nil {
+		t.Fatalf("GetCertByFingerprint: %v", err)
+	}
+	if got.CommonName != "floor-1-pump" {
+		t.Errorf("CN mismatch: %s", got.CommonName)
+	}
+	if got.Revoked {
+		t.Error("expected cert not revoked initially")
+	}
+
+	// Revoke
+	if err := store.RevokeCert(ctx, row.Fingerprint); err != nil {
+		t.Fatalf("RevokeCert: %v", err)
+	}
+
+	// After revocation, ListCertsBySite should not return it.
+	certs, err := store.ListCertsBySite(ctx, "ste_c", "gateway")
+	if err != nil {
+		t.Fatalf("ListCertsBySite: %v", err)
+	}
+	for _, c := range certs {
+		if c.Fingerprint == row.Fingerprint {
+			t.Error("revoked cert should not appear in ListCertsBySite(revoked=0)")
+		}
+	}
+}
+
+func TestRevokeCert_NotFound(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	err := store.RevokeCert(ctx, "nonexistent_fingerprint")
+	if err != sqlite.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// parseTime is a test helper to parse RFC3339 times.
+func parseTime(t *testing.T, s string) (ts time.Time) {
+	t.Helper()
+	var err error
+	ts, err = time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("parseTime %q: %v", s, err)
+	}
+	return ts
 }

@@ -1,0 +1,45 @@
+## controlai — EMQX 5.x config for site {{.Site.ID}}
+## Generated — do not edit manually.
+
+node {
+  name = "emqx@{{.Site.TenantID}}-{{.Site.ID}}-broker"
+  cookie = "controlai-{{.Site.TenantID}}-{{.Site.ID}}"
+  data_dir = "/opt/emqx/data"
+}
+
+cluster {
+  discovery_strategy = static
+}
+
+listeners.ssl.default {
+  bind = "0.0.0.0:8883"
+  ssl_options {
+    keyfile   = "/opt/emqx/etc/certs/server.key"
+    certfile  = "/opt/emqx/etc/certs/server.crt"
+    cacertfile = "/opt/emqx/etc/certs/ca.crt"
+    verify    = verify_peer
+    fail_if_no_peer_cert = true
+    peer_cert_as_username = cn
+    peer_cert_as_clientid = md5
+  }
+}
+
+## Disable plain TCP listener
+listeners.tcp.default.enabled = false
+
+authorization {
+  no_match = deny
+  deny_action = disconnect
+  sources = [
+    {
+      type = file
+      enable = true
+      path = "/opt/emqx/etc/acl.conf"
+    }
+  ]
+}
+
+## Bootstrap API keys — loaded once at startup
+api_key {
+  bootstrap_file = "/opt/emqx/etc/api_keys.bootstrap"
+}

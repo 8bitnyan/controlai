@@ -1,0 +1,13 @@
+%% controlai — EMQX ACL for site {{.Site.ID}}
+%% Generated — do not edit manually.
+%% Topic pattern: <tenant_id>/<site_id>/+/+
+
+%% Ingestor identity subscribes to direct and shared-subscription topics
+{allow, {user, "controlai-ingestor-{{.Site.ID}}"}, subscribe, ["{{.Site.TenantID}}/{{.Site.ID}}/+/+"]}.
+{allow, {user, "controlai-ingestor-{{.Site.ID}}"}, subscribe, ["$share/{{.Site.ID}}/{{.Site.TenantID}}/{{.Site.ID}}/+/+"]}.
+
+%% All authenticated clients (gateways, CN-based) may publish on the tenant/site hierarchy
+{allow, all, publish, ["{{.Site.TenantID}}/{{.Site.ID}}/+/+"]}.
+
+%% Deny everything else
+{deny, all}.

@@ -1,0 +1,13 @@
+# controlai — mosquitto ACL for site {{.Site.ID}}
+# Generated — do not edit manually.
+# Topic pattern: <tenant_id>/<site_id>/+/+
+# Only the ingestor CN may subscribe. Gateways may publish only (no subscribe).
+
+# Ingestor identity (CN = controlai-ingestor-{{.Site.ID}}) — subscribe only
+user controlai-ingestor-{{.Site.ID}}
+topic read {{.Site.TenantID}}/{{.Site.ID}}/+/+
+
+# All authenticated clients (gateways) may publish on the tenant/site topic hierarchy
+pattern write {{.Site.TenantID}}/{{.Site.ID}}/+/+
+
+# Deny all other access (default deny is enforced by allow_anonymous false + require_certificate)

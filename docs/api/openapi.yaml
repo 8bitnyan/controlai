@@ -1,0 +1,537 @@
+openapi: "3.1.0"
+info:
+  title: controlai API
+  description: |
+    controlai REST API — multi-tenant IoT data-pipeline control plane.
+
+    Two transports expose the identical handler set:
+    - **Unix socket** (default): `/var/run/controlai.sock` — used by the CLI; no token required.
+    - **TCP+TLS** (optional): bearer-token required on every request.
+  version: "1.0.0"
+
+servers:
+  - url: http://controlai
+    description: Unix socket (CLI default)
+  - url: https://api.controlai.{domain}
+    description: TLS TCP listener (remote / GUI)
+    variables:
+      domain:
+        default: local
+
+security: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    TenantRow:
+      type: object
+      required: [id, domain, retention, status]
+      properties:
+        id:          { type: string, example: "tnt_acme-corp" }
+        name:        { type: string, example: "Acme Corp" }
+        domain:      { type: string, example: "acme.example.com" }
+        retention:   { type: string, enum: [1m, 1h, 1d, 7d, 30d] }
+        schema_version: { type: integer, example: 1 }
+        status:      { type: string, enum: [active, orphaned] }
+        created_at:  { type: string, format: date-time }
+        updated_at:  { type: string, format: date-time }
+
+    SiteRow:
+      type: object
+      required: [id, tenant_id, broker_kind, throughput, direction, payload_codec, status]
+      properties:
+        id:            { type: string, example: "ste_seoul" }
+        tenant_id:     { type: string, example: "tnt_acme-corp" }
+        broker_kind:   { type: string, enum: [mosquitto, emqx] }
+        throughput:    { type: string, enum: [low, mid] }
+        direction:     { type: string, enum: [uni, bi] }
+        payload_codec: { type: string, enum: [cbor, json, raw_passthrough] }
+        leaf_ttl_days: { type: integer, example: 365 }
+        schema_version: { type: integer, example: 1 }
+        status:        { type: string, enum: [active, stopped, orphaned] }
+        created_at:    { type: string, format: date-time }
+        updated_at:    { type: string, format: date-time }
+
+    HealthResponse:
+      type: object
+      required: [status, version, docker_reachable, registry_healthy]
+      properties:
+        status:               { type: string, example: "ok" }
+        version:              { type: string, example: "v0.1.0" }
+        docker_reachable:     { type: boolean }
+        registry_healthy:     { type: boolean }
+        reconciler_last_tick: { type: string, format: date-time }
+
+    CapacityPrediction:
+      type: object
+      required: [total_usable_mb, max_allowed_mb, projected_mb, admissible, headroom_mb]
+      properties:
+        total_usable_mb: { type: integer, description: "Usable RAM (MemTotal - host overhead) in MB" }
+        max_allowed_mb:  { type: integer, description: "85% of total_usable_mb" }
+        projected_mb:    { type: integer, description: "Currently projected RSS across all tenants and sites" }
+        admissible:      { type: boolean }
+        headroom_mb:     { type: integer }
+        breakdown:
+          type: array
+          items:
+            type: object
+            properties:
+              tenant_id: { type: string }
+              tsdb_mb:   { type: integer }
+              sites_mb:  { type: integer }
+              total_mb:  { type: integer }
+
+    CreateTenantRequest:
+      type: object
+      required: [slug]
+      properties:
+        slug:       { type: string, pattern: '^[a-z][a-z0-9-]{0,40}$', example: "acme-corp" }
+        name:       { type: string }
+        domain:     { type: string, example: "acme.example.com" }
+        retention:  { type: string, enum: [1m, 1h, 1d, 7d, 30d], default: "7d" }
+
+    CreateSiteRequest:
+      type: object
+      required: [slug]
+      properties:
+        slug:          { type: string, pattern: '^[a-z][a-z0-9-]{0,40}$', example: "seoul" }
+        broker_kind:   { type: string, enum: [mosquitto, emqx], default: "mosquitto" }
+        throughput:    { type: string, enum: [low, mid], default: "low" }
+        direction:     { type: string, enum: [uni, bi], default: "uni" }
+        payload_codec: { type: string, enum: [cbor, json, raw_passthrough], default: "cbor" }
+
+    PublishRequest:
+      type: object
+      required: [topic, payload]
+      properties:
+        topic:   { type: string, example: "tnt_acme-corp/ste_seoul/device-1/cmd" }
+        payload: { type: string, description: "Base64-encoded or plaintext payload" }
+        qos:     { type: integer, enum: [0, 1, 2], default: 1 }
+
+    ApplyResponse:
+      type: object
+      properties:
+        selector: { type: string }
+        status:   { type: string, example: "applying" }
+
+paths:
+  /v1/health:
+    get:
+      summary: Daemon health check
+      operationId: getHealth
+      tags: [System]
+      responses:
+        "200":
+          description: Daemon is running
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+
+  /v1/capacity:
+    get:
+      summary: Current capacity prediction
+      operationId: getCapacity
+      tags: [System]
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Capacity prediction result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CapacityPrediction' }
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/tenants:
+    get:
+      summary: List all tenants
+      operationId: listTenants
+      tags: [Tenants]
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Array of tenant rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TenantRow' }
+    post:
+      summary: Create a new tenant
+      operationId: createTenant
+      tags: [Tenants]
+      security:
+        - {}
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTenantRequest' }
+      responses:
+        "201":
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, example: "tnt_acme-corp" }
+        "400":
+          description: Invalid slug or field
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "409":
+          description: Duplicate slug or capacity limit exceeded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/tenants/{tid}:
+    parameters:
+      - name: tid
+        in: path
+        required: true
+        schema: { type: string }
+        description: Tenant ID (e.g. tnt_acme-corp)
+    get:
+      summary: Get a tenant
+      operationId: getTenant
+      tags: [Tenants]
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Tenant row
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TenantRow' }
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      summary: Update a tenant (retention, name)
+      operationId: updateTenant
+      tags: [Tenants]
+      security:
+        - {}
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                retention: { type: string, enum: [1m, 1h, 1d, 7d, 30d] }
+                name:      { type: string }
+      responses:
+        "200":
+          description: Updated tenant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TenantRow' }
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "501":
+          description: Not yet implemented
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      summary: Delete a tenant (soft delete by default)
+      operationId: deleteTenant
+      tags: [Tenants]
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - name: purge
+          in: query
+          schema: { type: boolean, default: false }
+          description: "If true, hard-delete volumes and on-disk data"
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/tenants/{tid}/sites:
+    parameters:
+      - name: tid
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: List sites for a tenant
+      operationId: listSites
+      tags: [Sites]
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Array of site rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SiteRow' }
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    post:
+      summary: Create a site under a tenant
+      operationId: createSite
+      tags: [Sites]
+      security:
+        - {}
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateSiteRequest' }
+      responses:
+        "201":
+          description: Site created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, example: "ste_seoul" }
+        "400":
+          description: Invalid config or capability-matrix violation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "409":
+          description: Duplicate site or capacity limit exceeded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/tenants/{tid}/sites/{sid}:
+    parameters:
+      - name: tid
+        in: path
+        required: true
+        schema: { type: string }
+      - name: sid
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get a site
+      operationId: getSite
+      tags: [Sites]
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Site row
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SiteRow' }
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      summary: Update a site
+      operationId: updateSite
+      tags: [Sites]
+      security:
+        - {}
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payload_codec: { type: string, enum: [cbor, json, raw_passthrough] }
+      responses:
+        "200":
+          description: Updated site
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SiteRow' }
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "501":
+          description: Not yet implemented
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      summary: Delete a site (soft delete by default)
+      operationId: deleteSite
+      tags: [Sites]
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - name: purge
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/tenants/{tid}/sites/{sid}/publish:
+    parameters:
+      - name: tid
+        in: path
+        required: true
+        schema: { type: string }
+      - name: sid
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Publish a downlink command (bi-mode sites only)
+      operationId: publishDownlink
+      tags: [Sites]
+      security:
+        - {}
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublishRequest' }
+      responses:
+        "202":
+          description: Accepted — daemon forwarded to ingest for publish
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: "accepted" }
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "409":
+          description: Site is direction=uni; downlink not supported
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/tenants/{tid}/sites/{sid}/logs:
+    parameters:
+      - name: tid
+        in: path
+        required: true
+        schema: { type: string }
+      - name: sid
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Stream recent container logs for a site service
+      operationId: getSiteLogs
+      tags: [Sites]
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - name: service
+          in: query
+          schema: { type: string }
+          description: "Container service name (broker | ingest-0 | ingest-1)"
+        - name: tail
+          in: query
+          schema: { type: integer, default: 100 }
+          description: Number of log lines to return
+      responses:
+        "200":
+          description: Log lines (newline-delimited plain text)
+          content:
+            text/plain:
+              schema: { type: string }
+        "404":
+          description: Site not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "501":
+          description: Not yet implemented
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/apply/{selector}:
+    parameters:
+      - name: selector
+        in: path
+        required: true
+        schema: { type: string }
+        description: |
+          Compose project selector.
+          - `<tenant_id>-tsdb` — start the tenant TSDB
+          - `<tenant_id>-<site_id>` — reconcile a site to running
+          - `<tenant_id>-<site_id>-stop` — stop a site
+    post:
+      summary: Write desired state and trigger a reconciler tick
+      operationId: apply
+      tags: [System]
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "202":
+          description: Accepted — reconciler will converge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplyResponse' }

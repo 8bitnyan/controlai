@@ -509,6 +509,178 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 	return err
 }
 
+// ─── PKI: Certificate Authorities ────────────────────────────────────────────
+
+// CACertRow holds a per-site CA row from the `cas` table.
+type CACertRow struct {
+	SiteID      string
+	CertPEM     string
+	KeyEnc      []byte // AES-256-GCM encrypted PKCS8 key
+	KeyNonce    []byte // 12-byte GCM nonce
+	Fingerprint string
+	NotBefore   time.Time
+	NotAfter    time.Time
+	CreatedAt   time.Time
+}
+
+// StoreCACert inserts or replaces the CA for a site.
+func (s *Store) StoreCACert(ctx context.Context, row CACertRow) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO cas (site_id, cert_pem, key_enc, key_nonce, fingerprint, not_before, not_after)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(site_id) DO UPDATE SET
+		   cert_pem=excluded.cert_pem, key_enc=excluded.key_enc,
+		   key_nonce=excluded.key_nonce, fingerprint=excluded.fingerprint,
+		   not_before=excluded.not_before, not_after=excluded.not_after`,
+		row.SiteID, row.CertPEM, row.KeyEnc, row.KeyNonce, row.Fingerprint,
+		row.NotBefore.UTC().Format(time.RFC3339), row.NotAfter.UTC().Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("store CA for site %s: %w", row.SiteID, err)
+	}
+	return nil
+}
+
+// GetCACert retrieves the CA row for a site.
+func (s *Store) GetCACert(ctx context.Context, siteID string) (*CACertRow, error) {
+	row := &CACertRow{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT site_id, cert_pem, key_enc, key_nonce, fingerprint, not_before, not_after, created_at
+		 FROM cas WHERE site_id=?`, siteID).
+		Scan(&row.SiteID, &row.CertPEM, &row.KeyEnc, &row.KeyNonce, &row.Fingerprint,
+			&row.NotBefore, &row.NotAfter, &row.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get CA for site %s: %w", siteID, err)
+	}
+	return row, nil
+}
+
+// ─── PKI: Issued Certificates ─────────────────────────────────────────────────
+
+// CertRow holds a row from the `certs` table.
+type CertRow struct {
+	ID          string
+	SiteID      string
+	Kind        string // gateway | server | ingestor
+	CommonName  string
+	CertPEM     string
+	Fingerprint string
+	NotBefore   time.Time
+	NotAfter    time.Time
+	Revoked     bool
+	RevokedAt   *time.Time
+	CreatedAt   time.Time
+}
+
+// StoreCert inserts a new certificate into the `certs` table.
+// The private key is NOT stored — only the public cert and metadata.
+func (s *Store) StoreCert(ctx context.Context, row CertRow) error {
+	if row.ID == "" {
+		row.ID = mustNewUUID()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO certs (id, site_id, kind, common_name, cert_pem, fingerprint, not_before, not_after)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.ID, row.SiteID, row.Kind, row.CommonName, row.CertPEM, row.Fingerprint,
+		row.NotBefore.UTC().Format(time.RFC3339), row.NotAfter.UTC().Format(time.RFC3339))
+	if err != nil {
+		if isSQLiteDuplicate(err) {
+			return ErrDuplicate
+		}
+		return fmt.Errorf("store cert for site %s kind %s: %w", row.SiteID, row.Kind, err)
+	}
+	return nil
+}
+
+// GetCertByFingerprint retrieves a cert by its SHA-256 fingerprint.
+func (s *Store) GetCertByFingerprint(ctx context.Context, fingerprint string) (*CertRow, error) {
+	row := &CertRow{}
+	var revokedInt int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, site_id, kind, common_name, cert_pem, fingerprint, not_before, not_after, revoked, created_at
+		 FROM certs WHERE fingerprint=?`, fingerprint).
+		Scan(&row.ID, &row.SiteID, &row.Kind, &row.CommonName, &row.CertPEM, &row.Fingerprint,
+			&row.NotBefore, &row.NotAfter, &revokedInt, &row.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get cert by fingerprint: %w", err)
+	}
+	row.Revoked = revokedInt == 1
+	return row, nil
+}
+
+// ListCertsBySite returns all non-revoked certs for a site, optionally filtered by kind.
+func (s *Store) ListCertsBySite(ctx context.Context, siteID, kind string) ([]CertRow, error) {
+	q := `SELECT id, site_id, kind, common_name, cert_pem, fingerprint, not_before, not_after, revoked, created_at
+		  FROM certs WHERE site_id=? AND revoked=0`
+	args := []any{siteID}
+	if kind != "" {
+		q += ` AND kind=?`
+		args = append(args, kind)
+	}
+	q += ` ORDER BY created_at DESC`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CertRow
+	for rows.Next() {
+		var row CertRow
+		var revokedInt int
+		if err := rows.Scan(&row.ID, &row.SiteID, &row.Kind, &row.CommonName, &row.CertPEM,
+			&row.Fingerprint, &row.NotBefore, &row.NotAfter, &revokedInt, &row.CreatedAt); err != nil {
+			return nil, err
+		}
+		row.Revoked = revokedInt == 1
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// RevokeCert marks a certificate revoked by fingerprint.
+func (s *Store) RevokeCert(ctx context.Context, fingerprint string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE certs SET revoked=1, revoked_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		 WHERE fingerprint=? AND revoked=0`, fingerprint)
+	if err != nil {
+		return fmt.Errorf("revoke cert %s: %w", fingerprint, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListExpiringCerts returns non-revoked certs expiring within the given number of days.
+func (s *Store) ListExpiringCerts(ctx context.Context, withinDays int) ([]CertRow, error) {
+	cutoff := time.Now().AddDate(0, 0, withinDays).UTC().Format(time.RFC3339)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, site_id, kind, common_name, cert_pem, fingerprint, not_before, not_after, revoked, created_at
+		 FROM certs WHERE revoked=0 AND not_after <= ? ORDER BY not_after ASC`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CertRow
+	for rows.Next() {
+		var row CertRow
+		var revokedInt int
+		if err := rows.Scan(&row.ID, &row.SiteID, &row.Kind, &row.CommonName, &row.CertPEM,
+			&row.Fingerprint, &row.NotBefore, &row.NotAfter, &revokedInt, &row.CreatedAt); err != nil {
+			return nil, err
+		}
+		row.Revoked = revokedInt == 1
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // ─── EMQX API keys ────────────────────────────────────────────────────────────
 
 // EMQXAPIKey holds the EMQX REST API key for a site.
