@@ -1,0 +1,45 @@
+# Traefik v3 static configuration — controlai EC2 host
+# Rendered by up.sh (ACME_STAGING and ACME_EMAIL are substituted at provision time).
+# Do NOT hand-edit on the instance; re-run up.sh --update to regenerate.
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  level: INFO
+
+api:
+  insecure: false
+  dashboard: false
+
+entryPoints:
+  web:
+    address: ":80"
+    # Redirect all plain-HTTP traffic to HTTPS (except ACME HTTP-01 challenge paths
+    # which are handled by Traefik automatically before the redirect kicks in).
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "${ACME_EMAIL}"
+      storage: /etc/traefik/acme/acme.json
+      # ACME_CA_SERVER is substituted by up.sh:
+      #   staging  → https://acme-staging-v02.api.letsencrypt.org/directory
+      #   prod     → https://acme-v02.api.letsencrypt.org/directory
+      caServer: "${ACME_CA_SERVER}"
+      httpChallenge:
+        entryPoint: web

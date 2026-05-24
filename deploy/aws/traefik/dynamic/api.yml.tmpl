@@ -1,0 +1,48 @@
+# Traefik dynamic configuration — controlai daemon HTTPS API route
+# Rendered by up.sh via envsubst; written to /etc/traefik/dynamic/api.yml on the EC2 host.
+# Variables substituted: DEPLOYMENT_NAME, DAEMON_TCP_PORT
+# Traefik hot-reloads this file; no service restart required after update.
+#
+# Architecture note: the controlai daemon TCP listener uses TLS (self-signed cert on localhost).
+# Traefik connects to it over HTTPS with insecureSkipVerify=true — acceptable because both
+# processes are on the same host; there is no network hop, and no client cert is required.
+# This avoids any daemon Go code change (D14).
+
+http:
+  serversTransports:
+    daemon-localhost-tls:
+      # Skip cert verification for the localhost-only backend connection.
+      # The self-signed cert on the daemon TCP listener cannot be trusted by a CA;
+      # insecureSkipVerify is safe here because traffic never leaves the host.
+      insecureSkipVerify: true
+
+  routers:
+    api-${DEPLOYMENT_NAME}:
+      # API_HOST is substituted by up.sh: defaults to api.<DEPLOYMENT_NAME>.sslip.io,
+      # overridden by DEPLOYMENT_DOMAIN if set.
+      rule: "Host(`${API_HOST}`)"
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+      service: controlai-daemon
+      middlewares:
+        - bearer-passthrough
+
+  middlewares:
+    # No-op middleware — bearer token authentication is enforced by the daemon itself.
+    # The middleware slot is declared here so it is explicit and extensible (e.g. rate
+    # limiting or IP allowlisting can be added in a later change without restructuring
+    # the router definition).
+    bearer-passthrough:
+      headers:
+        customRequestHeaders:
+          X-Forwarded-Proto: "https"
+
+  services:
+    controlai-daemon:
+      loadBalancer:
+        passHostHeader: false
+        serversTransport: daemon-localhost-tls
+        servers:
+          - url: "https://127.0.0.1:${DAEMON_TCP_PORT}"
