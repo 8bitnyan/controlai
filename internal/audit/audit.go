@@ -36,11 +36,12 @@ const (
 type Event struct {
 	ID        int64     `db:"id"`
 	Kind      Kind      `db:"kind"`
-	TenantID  string    `db:"tenant_id"` // may be empty
-	SiteID    string    `db:"site_id"`   // may be empty
-	ActorIP   string    `db:"actor_ip"`  // may be empty
-	Detail    string    `db:"detail"`    // JSON or free-form text
+	TenantID  string    `db:"tenant_id"`  // may be empty
+	SiteID    string    `db:"site_id"`    // may be empty
+	ActorIP   string    `db:"actor_ip"`   // may be empty
+	Detail    string    `db:"detail"`     // JSON or free-form text
 	Success   bool      `db:"success"`
+	ProjectID string    `db:"project_id" json:"project_id,omitempty"` // opaque tag from controlai-web; empty = omitted
 	CreatedAt time.Time `db:"created_at"`
 }
 

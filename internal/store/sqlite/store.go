@@ -21,6 +21,9 @@ import (
 //go:embed migrations/0001_init.sql
 var initSQL string
 
+//go:embed migrations/0002_add_project_id.sql
+var migration0002SQL string
+
 // Store is the SQLite-backed store for controlai.
 type Store struct {
 	db *sql.DB
@@ -33,11 +36,71 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(1) // SQLite WAL supports 1 writer
-	if _, err := db.ExecContext(context.Background(), initSQL); err != nil {
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, initSQL); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("migrate sqlite: %w", err)
+		return nil, fmt.Errorf("migrate sqlite (0001): %w", err)
+	}
+	if err := applyMigration0002(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate sqlite (0002): %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+// columnExists checks whether a column exists in a SQLite table using PRAGMA table_info.
+func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("PRAGMA table_info(%s): %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// applyMigration0002 applies the 0002 migration (add project_id to tenants and
+// audit_events) guarded by PRAGMA table_info checks so re-running on an
+// already-migrated database is a no-op.
+func applyMigration0002(ctx context.Context, db *sql.DB) error {
+	// Add project_id to tenants if not present.
+	hasTenantCol, err := columnExists(ctx, db, "tenants", "project_id")
+	if err != nil {
+		return err
+	}
+	if !hasTenantCol {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE tenants ADD COLUMN project_id TEXT`); err != nil {
+			return fmt.Errorf("alter tenants add project_id: %w", err)
+		}
+	}
+
+	// Add project_id to audit_events if not present.
+	hasAuditCol, err := columnExists(ctx, db, "audit_events", "project_id")
+	if err != nil {
+		return err
+	}
+	if !hasAuditCol {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE audit_events ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("alter audit_events add project_id: %w", err)
+		}
+	}
+
+	// Indexes use IF NOT EXISTS — always safe to run.
+	if _, err := db.ExecContext(ctx, migration0002SQL); err != nil {
+		return fmt.Errorf("migration 0002 indexes: %w", err)
+	}
+	return nil
 }
 
 // Close releases the database connection.
@@ -56,6 +119,7 @@ type TenantRow struct {
 	Retention     string
 	SchemaVersion int
 	Status        string
+	ProjectID     string    `json:"project_id,omitempty"` // opaque tag; empty = no project
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
@@ -63,9 +127,9 @@ type TenantRow struct {
 // CreateTenant inserts a new tenant, returning ErrDuplicate if the ID already exists.
 func (s *Store) CreateTenant(ctx context.Context, t TenantRow) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO tenants (id, name, domain, retention, schema_version, status)
-		 VALUES (?, ?, ?, ?, ?, 'active')`,
-		t.ID, t.Name, t.Domain, t.Retention, t.SchemaVersion)
+		`INSERT INTO tenants (id, name, domain, retention, schema_version, status, project_id)
+		 VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+		t.ID, t.Name, t.Domain, t.Retention, t.SchemaVersion, nullableStr(t.ProjectID))
 	if err != nil {
 		if isSQLiteDuplicate(err) {
 			return ErrDuplicate
@@ -78,10 +142,10 @@ func (s *Store) CreateTenant(ctx context.Context, t TenantRow) error {
 // GetTenant retrieves a tenant by ID.
 func (s *Store) GetTenant(ctx context.Context, id string) (*TenantRow, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, domain, retention, schema_version, status, created_at, updated_at
+		`SELECT id, name, domain, retention, schema_version, status, COALESCE(project_id,''), created_at, updated_at
 		 FROM tenants WHERE id = ?`, id)
 	t := &TenantRow{}
-	err := row.Scan(&t.ID, &t.Name, &t.Domain, &t.Retention, &t.SchemaVersion, &t.Status, &t.CreatedAt, &t.UpdatedAt)
+	err := row.Scan(&t.ID, &t.Name, &t.Domain, &t.Retention, &t.SchemaVersion, &t.Status, &t.ProjectID, &t.CreatedAt, &t.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -91,11 +155,38 @@ func (s *Store) GetTenant(ctx context.Context, id string) (*TenantRow, error) {
 	return t, nil
 }
 
-// ListTenants returns all tenants.
+// ListTenants returns all tenants ordered by ID.
 func (s *Store) ListTenants(ctx context.Context) ([]TenantRow, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, domain, retention, schema_version, status, created_at, updated_at
-		 FROM tenants ORDER BY id`)
+	return s.listTenantsQuery(ctx, `SELECT id, name, domain, retention, schema_version, status, COALESCE(project_id,''), created_at, updated_at
+		 FROM tenants ORDER BY id`, nil)
+}
+
+// ListTenantsFiltered returns tenants filtered by project_id.
+// projectIDFilter == nil → return all tenants (same as ListTenants).
+// projectIDFilter == ptr to "" → return tenants where project_id IS NULL or project_id = ''.
+// projectIDFilter == ptr to "proj-abc" → return tenants where project_id = 'proj-abc'.
+func (s *Store) ListTenantsFiltered(ctx context.Context, projectIDFilter *string) ([]TenantRow, error) {
+	if projectIDFilter == nil {
+		return s.ListTenants(ctx)
+	}
+	filter := *projectIDFilter
+	var q string
+	var args []any
+	if filter == "" {
+		// "untagged" — project_id IS NULL or empty string
+		q = `SELECT id, name, domain, retention, schema_version, status, COALESCE(project_id,''), created_at, updated_at
+		     FROM tenants WHERE project_id IS NULL OR project_id = '' ORDER BY id`
+	} else {
+		q = `SELECT id, name, domain, retention, schema_version, status, COALESCE(project_id,''), created_at, updated_at
+		     FROM tenants WHERE project_id = ? ORDER BY id`
+		args = []any{filter}
+	}
+	return s.listTenantsQuery(ctx, q, args)
+}
+
+// listTenantsQuery is the shared scan helper for tenant list queries.
+func (s *Store) listTenantsQuery(ctx context.Context, q string, args []any) ([]TenantRow, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -103,12 +194,28 @@ func (s *Store) ListTenants(ctx context.Context) ([]TenantRow, error) {
 	var out []TenantRow
 	for rows.Next() {
 		var t TenantRow
-		if err := rows.Scan(&t.ID, &t.Name, &t.Domain, &t.Retention, &t.SchemaVersion, &t.Status, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Domain, &t.Retention, &t.SchemaVersion, &t.Status, &t.ProjectID, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// UpdateTenantProjectID updates the project_id tag for a tenant.
+// Pass empty string to clear the tag (sets NULL in the database).
+func (s *Store) UpdateTenantProjectID(ctx context.Context, id, projectID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE tenants SET project_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`,
+		nullableStr(projectID), id)
+	if err != nil {
+		return fmt.Errorf("update tenant project_id: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // DeleteTenant marks a tenant as orphaned (soft delete). Pass purge=true to hard-delete.
@@ -445,15 +552,15 @@ func (s *Store) Emit(ctx context.Context, ev audit.Event) error {
 		success = 0
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit_events (kind, tenant_id, site_id, actor_ip, detail, success)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		string(ev.Kind), ev.TenantID, ev.SiteID, ev.ActorIP, detail, success)
+		`INSERT INTO audit_events (kind, tenant_id, site_id, actor_ip, detail, success, project_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		string(ev.Kind), ev.TenantID, ev.SiteID, ev.ActorIP, detail, success, ev.ProjectID)
 	return err
 }
 
 // ListAuditEvents returns the most recent N audit events, optionally filtered by kind prefix.
 func (s *Store) ListAuditEvents(ctx context.Context, kindPrefix string, limit int) ([]audit.Event, error) {
-	q := `SELECT id, kind, tenant_id, site_id, actor_ip, detail, success, created_at FROM audit_events`
+	q := `SELECT id, kind, tenant_id, site_id, actor_ip, detail, success, created_at, COALESCE(project_id,'') FROM audit_events`
 	args := []any{}
 	if kindPrefix != "" {
 		q += ` WHERE kind LIKE ?`
@@ -470,7 +577,7 @@ func (s *Store) ListAuditEvents(ctx context.Context, kindPrefix string, limit in
 	for rows.Next() {
 		var ev audit.Event
 		var successInt int
-		if err := rows.Scan(&ev.ID, &ev.Kind, &ev.TenantID, &ev.SiteID, &ev.ActorIP, &ev.Detail, &successInt, &ev.CreatedAt); err != nil {
+		if err := rows.Scan(&ev.ID, &ev.Kind, &ev.TenantID, &ev.SiteID, &ev.ActorIP, &ev.Detail, &successInt, &ev.CreatedAt, &ev.ProjectID); err != nil {
 			return nil, err
 		}
 		ev.Success = successInt == 1
@@ -834,6 +941,15 @@ var (
 
 func isSQLiteDuplicate(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// nullableStr converts an empty string to nil (NULL in SQLite) and a non-empty
+// string to a *string. This gives us proper NULL vs '' semantics for project_id.
+func nullableStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // mustNewUUID generates a UUID v4-like string from crypto/rand.
