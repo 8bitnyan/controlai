@@ -101,4 +101,4 @@
 
 ## 9. Archival
 
-- [ ] 9.1 After all tasks complete, archive change to `openspec/changes/archive/YYYY-MM-DD-add-aws-provisioning/`, sync `aws-provisioning` capability into `openspec/specs/`.
+- [x] 9.1 After all tasks complete, archive change to `openspec/changes/archive/YYYY-MM-DD-add-aws-provisioning/`, sync `aws-provisioning` capability into `openspec/specs/`.
