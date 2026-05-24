@@ -97,14 +97,34 @@
 - [ ] 9.4 Persist current step in URL search params (`?step=1`) so the wizard survives page refreshes.
 - [ ] 9.5 Add `GET /api/setup-state` route that returns the setup state JSON; setup wizard polls this to determine which step to show.
 
-## 10. CI & testing
+## 10. UI pages — Org, Project, SiteGroup, Site CRUD
 
-- [ ] 10.1 Create `.github/workflows/ci.yml` with jobs: `lint` (turbo run lint), `typecheck` (turbo run typecheck), `unit-test` (turbo run test — Vitest), `e2e` (Playwright, only on PR to `main`).
-- [ ] 10.2 Install Vitest in `packages/api` and `packages/db`: `pnpm add -D vitest @vitest/coverage-v8 -w --filter @controlai-web/api --filter @controlai-web/db`.
-- [ ] 10.3 Write unit tests for `packages/api/src/lib/crypto.ts`: round-trip encrypt/decrypt, missing key throws, tampered ciphertext throws.
-- [ ] 10.4 Write unit tests for `packages/api/src/routers/instance.ts` (mock `daemon-client`): `register` calls testConnection, inserts with encrypted token; `instance.delete` blocked if projects exist.
-- [ ] 10.5 Write unit tests for `packages/api/src/lib/setup-state.ts`: empty DB returns all false; after seed returns correct states.
-- [ ] 10.6 Install Playwright: `pnpm add -D @playwright/test -w --filter apps/web`; `pnpm playwright install chromium`.
-- [ ] 10.7 Write Playwright E2E test `apps/web/e2e/setup-wizard.spec.ts`: navigate to `/`, expect redirect to `/setup`, complete steps 1-3 with test credentials + mocked daemon, assert redirect to dashboard.
-- [ ] 10.8 Configure Vercel preview deployments: add `vercel.json` with `buildCommand`, `outputDirectory`, `framework: nextjs`; set env var secrets in Vercel dashboard.
-- [ ] 10.9 Add `openspec validate add-controlai-web-skeleton --strict` step to CI workflow.
+- [ ] 10.1 Build Org settings page at `apps/web/app/(app)/orgs/[orgId]/settings/page.tsx` with tabs: General (rename), Members (list + role-badge + remove button), Invitations (pending list + invite form), Danger (delete org — OWNER only).
+- [ ] 10.2 Build Project list page at `apps/web/app/(app)/orgs/[orgId]/projects/page.tsx`: card grid of projects (name, instance badge, site-group count); "New Project" button opens shadcn Dialog with name + instanceId select.
+- [ ] 10.3 Build Project detail page at `apps/web/app/(app)/orgs/[orgId]/projects/[projectId]/page.tsx`: breadcrumb, SiteGroup list as cards, "New Site Group" button.
+- [ ] 10.4 Build SiteGroup detail page at `apps/web/app/(app)/orgs/[orgId]/projects/[projectId]/site-groups/[siteGroupId]/page.tsx`: site list table (name, status, provisioned badge), links to Canvas and Dashboard tabs.
+- [ ] 10.5 Build Site create/edit drawer at `apps/web/components/domain/site-form.tsx`: name field, broker kind select (mosquitto/EMQX), throughput select (low/mid), ingest direction select (uni/bi), retention select (1m/1h/1d/7d/30d); submits `site.create` or `site.update` tRPC mutation.
+- [ ] 10.6 Add delete confirmation dialog `apps/web/components/domain/delete-confirm-dialog.tsx` (reusable): renders resource name + "This action cannot be undone" + confirm button; used by Org, Project, SiteGroup, and Site delete actions.
+- [ ] 10.7 Add breadcrumb navigation component `apps/web/components/layout/breadcrumb.tsx` using Next.js 16 App Router segment params; renders `Org / Project / SiteGroup / Canvas` path with links.
+
+## 11. shadcn/ui and component setup
+
+- [ ] 11.1 Initialize shadcn/ui in `apps/web`: `npx shadcn@latest init` with `style: default`, `baseColor: slate`, `cssVariables: true`; creates `components/ui/` and `lib/utils.ts`.
+- [ ] 11.2 Add shadcn components used by skeleton pages: `pnpm dlx shadcn@latest add button input label card badge dialog dropdown-menu separator skeleton toast avatar`.
+- [ ] 11.3 Create `apps/web/components/layout/app-shell.tsx` — top navigation bar (logo, org-switcher dropdown, user-menu) + left sidebar (Projects tree, Instances link, Settings) + main content area; used by all `(app)` layout pages.
+- [ ] 11.4 Add `apps/web/app/(app)/layout.tsx` that wraps children with `<AppShell>` and fetches the current org via `getSession` + `org.list` Server Component call.
+- [ ] 11.5 Create global error boundary `apps/web/app/error.tsx` and `apps/web/app/global-error.tsx` following Next.js 16 App Router conventions; display a friendly "Something went wrong" card with a reload button.
+
+## 12. CI & testing
+
+- [ ] 12.1 Create `.github/workflows/ci.yml` with jobs: `lint` (turbo run lint), `typecheck` (turbo run typecheck), `unit-test` (turbo run test — Vitest), `e2e` (Playwright, only on PR to `main`).
+- [ ] 12.2 Install Vitest in `packages/api` and `packages/db`: `pnpm add -D vitest @vitest/coverage-v8 -w --filter @controlai-web/api --filter @controlai-web/db`.
+- [ ] 12.3 Write unit tests for `packages/api/src/lib/crypto.ts`: round-trip encrypt/decrypt, missing key throws, tampered ciphertext throws.
+- [ ] 12.4 Write unit tests for `packages/api/src/routers/instance.ts` (mock `daemon-client`): `register` calls testConnection, inserts with encrypted token; `instance.delete` blocked if projects exist.
+- [ ] 12.5 Write unit tests for `packages/api/src/lib/setup-state.ts`: empty DB returns all false; after seed returns correct states.
+- [ ] 12.6 Install Playwright: `pnpm add -D @playwright/test -w --filter apps/web`; `pnpm playwright install chromium`.
+- [ ] 12.7 Write Playwright E2E test `apps/web/e2e/setup-wizard.spec.ts`: navigate to `/`, expect redirect to `/setup`, complete steps 1-3 with test credentials + mocked daemon, assert redirect to dashboard.
+- [ ] 12.8 Configure Vercel preview deployments: add `vercel.json` with `buildCommand`, `outputDirectory`, `framework: nextjs`; set env var secrets in Vercel dashboard.
+- [ ] 12.9 Add `openspec validate add-controlai-web-skeleton --strict` step to CI workflow.
+- [ ] 12.10 Write Playwright E2E test `apps/web/e2e/org-member-invite.spec.ts`: sign in as OWNER → invite member email → accept via link → assert MEMBER role in members list.
+- [ ] 12.11 Write Playwright E2E test `apps/web/e2e/instance-register.spec.ts`: navigate to Instances → Register → fill URL + token → confirm test-connection result → submit → assert instance appears with HEALTHY badge.

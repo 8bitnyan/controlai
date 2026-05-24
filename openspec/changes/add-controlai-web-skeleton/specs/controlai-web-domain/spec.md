@@ -114,3 +114,28 @@ write path SHALL NOT block the primary mutation; failures SHALL be logged but sw
 - **WHEN** an ADMIN calls `audit.list({ orgId })`
 - **THEN** only audit entries for that org SHALL be returned
 - **AND** entries from other orgs SHALL NOT appear
+
+### Requirement: Domain CRUD UI pages — Org, Project, SiteGroup, Site
+
+`controlai-web` SHALL provide Next.js App Router pages for all CRUD operations in the
+domain hierarchy: Org settings (rename, members, invitations, danger zone), Project list
+and creation, SiteGroup detail and Site list, and Site create/edit. All delete actions
+SHALL present a confirmation dialog naming the resource before executing. Breadcrumb
+navigation SHALL reflect the current hierarchy path on all (app) pages.
+
+#### Scenario: Create a project from the project list page
+
+- **WHEN** an OWNER or ADMIN clicks "New Project" on the project list page and fills in a name and selects an instance
+- **THEN** a shadcn Dialog SHALL open with the create form; submitting SHALL call `project.create` and the new project card SHALL appear in the list without a full page reload
+
+#### Scenario: Delete a SiteGroup with confirmation
+
+- **WHEN** an OWNER clicks "Delete" on a SiteGroup card
+- **THEN** a confirmation dialog SHALL appear with the SiteGroup name and "This action cannot be undone"
+- **AND** only after confirming SHALL `siteGroup.delete` be called
+
+#### Scenario: Site form persists broker config
+
+- **WHEN** an OWNER fills in the Site create/edit form (broker kind, throughput, ingest direction, retention) and submits
+- **THEN** the `Site` row SHALL be created or updated with all supplied fields persisted
+- **AND** the site SHALL appear in the SiteGroup's site list with the correct broker kind badge

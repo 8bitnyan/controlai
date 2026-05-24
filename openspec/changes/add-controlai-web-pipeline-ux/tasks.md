@@ -118,23 +118,57 @@
 - [ ] 10.9 Create `packages/api/src/routers/dashboard.ts` with procedures `dashboard.load` and `dashboard.save` (upsert layout JSON for siteGroupId).
 - [ ] 10.10 Add time-window selector component to dashboard page header (Last 1h / 6h / 24h / 7d); pass selected window to `telemetry.range`.
 
-## 11. Acceptance
+## 11. Node palette sidebar
 
-- [ ] 11.1 Run `openspec validate add-controlai-web-pipeline-ux --strict` and confirm exit 0.
-- [ ] 11.2 Run `pnpm turbo run lint typecheck` — confirm zero errors.
-- [ ] 11.3 Run `pnpm turbo run test` — confirm all Vitest tests pass (connection-rules, nodeConfig router, apply.commit, synthesizePlan).
-- [ ] 11.4 Write Playwright E2E test `apps/web/e2e/pipeline-apply.spec.ts`:
+- [ ] 11.1 Create `apps/web/components/canvas/node-palette.tsx` — fixed left sidebar listing the 6 node types as draggable cards (icon + label + brief description); uses `@xyflow/react` `useDnD` hook / `onDragStart` handler to set `transferData`.
+- [ ] 11.2 Handle `onDrop` on the `<ReactFlow>` component in `canvas.tsx` to compute the drop position via `screenToFlowPosition` and insert a new node of the dragged type at that position.
+- [ ] 11.3 Assign a unique `id` to each dropped node using `crypto.randomUUID()`.
+- [ ] 11.4 Add a "Delete selected" toolbar button (trash icon) that calls `deleteElements({ nodes: selectedNodes })` from `useReactFlow()`; also wire the `Delete`/`Backspace` keyboard shortcut.
+- [ ] 11.5 Add a "Fit view" toolbar button that calls `reactFlowInstance.fitView({ padding: 0.2 })`.
+
+## 12. Apply modal — error recovery and re-run
+
+- [ ] 12.1 In `apply-modal.tsx`, add a "Re-run failed ops" button that appears when `Result.success = false`; clicking it re-runs `apply.preview` and then opens a fresh confirmation prompt.
+- [ ] 12.2 In `apply-modal.tsx`, display the daemon error body (JSON) in a `<pre>` block for each failed op so operators can diagnose without leaving the UI.
+- [ ] 12.3 In `apply-executor.ts`, capture and surface the daemon's HTTP response body (up to 2 KB) in the `OpResult.errorDetail` field on failure.
+- [ ] 12.4 Add a `apply.status({ siteGroupId })` tRPC procedure that returns the most recent apply result for a site group (stored in a lightweight `ApplyRun` Prisma model: `id, siteGroupId, planHash, success, opCount, failedAt, createdAt, resultJson`); shown in the canvas toolbar as "Last applied: {time}" or "Last apply failed".
+- [ ] 12.5 Add `ApplyRun` Prisma model to `packages/db/prisma/schema.prisma`; run `pnpm prisma migrate dev --name add_apply_run`.
+
+## 13. mqtt-bridge — Redis replay and Phase 2 EC2 sidecar
+
+- [ ] 13.1 Implement `Last-Event-ID` replay in `apps/mqtt-bridge/src/server.ts`: parse `Last-Event-ID` header from SSE request; if present, call `XRANGE <siteId>:<topic> <lastEventId> + COUNT 100` for each subscribed topic and emit those messages before switching to live fan-out.
+- [ ] 13.2 Set the SSE `id:` field on each event to the Redis Stream entry ID so that clients can provide an accurate `Last-Event-ID` on reconnect.
+- [ ] 13.3 Create `apps/mqtt-bridge/src/health.ts` — `GET /health` returns `{ status: "ok", activeSites: N, totalSubscribers: M }` where N is the number of sites with active MQTT clients and M is the count of connected SSE clients.
+- [ ] 13.4 Create `deploy/aws/docker-compose.mqtt-bridge.yml.tmpl` Go template for Phase 2 deployment of `mqtt-bridge` as a sidecar on the EC2 host: service `mqtt-bridge`, image `ghcr.io/8bitnyan/controlai-web/mqtt-bridge:latest`, ports `8080:8080`, env vars `DATABASE_URL`, `STREAM_JWT_SECRET`, `UPSTASH_REDIS_URL`, `UPSTASH_REDIS_TOKEN`.
+- [ ] 13.5 Document Phase 2 deployment in `apps/mqtt-bridge/README.md`: build the Docker image, push to GHCR, SSH to EC2 host, `docker compose -f docker-compose.mqtt-bridge.yml up -d`; update Traefik dynamic config to route `stream.<deployment>.sslip.io → mqtt-bridge:8080`.
+
+## 14. Dashboard — accessibility and widget management
+
+- [ ] 14.1 Add keyboard navigation to `dashboard-grid.tsx`: Tab through widgets; Enter to focus the drag handle; Space/arrow keys to move the focused widget within the grid (react-grid-layout supports programmatic layout update).
+- [ ] 14.2 Create `apps/web/components/dashboard/add-widget-dialog.tsx` — shadcn Dialog listing the 4 widget types with descriptions; selecting one appends a new widget entry to the dashboard layout and calls `dashboard.save`.
+- [ ] 14.3 Create `apps/web/components/dashboard/widget-wrapper.tsx` — common wrapper around each widget that provides: drag handle (gripper icon), resize handle (corner icon), widget title, and a `⋮` menu with "Remove widget" option (calls `dashboard.save` with that widget removed from layout).
+- [ ] 14.4 Add `aria-label` attributes and `role="region"` to each widget in `widget-wrapper.tsx` so screen readers can navigate the dashboard.
+- [ ] 14.5 Add empty-state placeholder to `dashboard-grid.tsx`: when the `Dashboard` record has no widgets, render a centred "No widgets yet — click Add widget" card.
+
+## 15. Acceptance
+
+- [ ] 15.1 Run `openspec validate add-controlai-web-pipeline-ux --strict` and confirm exit 0.
+- [ ] 15.2 Run `pnpm turbo run lint typecheck` — confirm zero errors.
+- [ ] 15.3 Run `pnpm turbo run test` — confirm all Vitest tests pass (connection-rules, nodeConfig router, apply.commit, synthesizePlan).
+- [ ] 15.4 Write Playwright E2E test `apps/web/e2e/pipeline-apply.spec.ts`:
   - Sign in → navigate to a SiteGroup canvas
   - Add Sensor → Gateway → Broker → Ingest → TimescaleDB nodes
   - Connect them per the connection matrix
   - Click Apply → see preview modal with Op list
   - Confirm Apply → assert success step-by-step
   - Navigate to dashboard → assert capacity gauge and status board render
-- [ ] 11.5 Write Playwright E2E test `apps/web/e2e/canvas-undo-redo.spec.ts`:
+- [ ] 15.5 Write Playwright E2E test `apps/web/e2e/canvas-undo-redo.spec.ts`:
   - Add a node → undo → assert node gone → redo → assert node present
-- [ ] 11.6 Write Playwright E2E test `apps/web/e2e/invalid-connection.spec.ts`:
+- [ ] 15.6 Write Playwright E2E test `apps/web/e2e/invalid-connection.spec.ts`:
   - Attempt to connect TimescaleDB → Sensor → assert toast "Cannot connect TimescaleDB → Sensor"
-- [ ] 11.7 Deploy `apps/mqtt-bridge` to Fly.io: `fly deploy --app controlai-mqtt-bridge` from `apps/mqtt-bridge/`.
-- [ ] 11.8 Set `STREAM_SERVICE_URL` and `STREAM_JWT_SECRET` in Vercel env; confirm `stream.token` tRPC endpoint returns a valid JWT.
-- [ ] 11.9 Connect a live controlai daemon site; assert SSE telemetry appears on canvas nodes as status dot + msg/sec.
-- [ ] 11.10 Assert dashboard `last-n-messages` widget reads from Redis and displays ≥1 message row after SSE data flows.
+- [ ] 15.7 Deploy `apps/mqtt-bridge` to Fly.io: `fly deploy --app controlai-mqtt-bridge` from `apps/mqtt-bridge/`.
+- [ ] 15.8 Set `STREAM_SERVICE_URL` and `STREAM_JWT_SECRET` in Vercel env; confirm `stream.token` tRPC endpoint returns a valid JWT.
+- [ ] 15.9 Connect a live controlai daemon site; assert SSE telemetry appears on canvas nodes as status dot + msg/sec.
+- [ ] 15.10 Assert dashboard `last-n-messages` widget reads from Redis and displays ≥1 message row after SSE data flows.
+- [ ] 15.11 Write Playwright E2E test `apps/web/e2e/node-palette-drag.spec.ts`: drag Broker node from palette → drop on canvas → assert Broker card rendered with config dialog openable.
+- [ ] 15.12 Write Playwright E2E test `apps/web/e2e/apply-rerun.spec.ts`: simulate apply failure by mocking daemon 500 → assert "Re-run failed ops" button appears → click → confirm new plan modal opens.

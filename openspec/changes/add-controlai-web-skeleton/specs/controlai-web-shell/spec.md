@@ -84,3 +84,32 @@ the root `package.json` and run in CI. Developers SHALL use `pnpm format` to aut
 - **WHEN** a developer runs `pnpm format` from the repo root
 - **THEN** Prettier SHALL rewrite all non-conforming files in-place
 - **AND** `pnpm turbo run format:check` SHALL subsequently exit 0
+
+### Requirement: shadcn/ui component library and app shell layout
+
+`controlai-web` SHALL use **shadcn/ui** (style: default, base color: slate, CSS variables)
+as its component primitive library. The `components/ui/` directory SHALL be generated via
+`npx shadcn@latest init` and SHALL include at minimum: `Button`, `Input`, `Label`, `Card`,
+`Badge`, `Dialog`, `DropdownMenu`, `Separator`, `Skeleton`, `Toast`, `Avatar`. A top-level
+`AppShell` component SHALL provide the app navigation (top bar + left sidebar + main area)
+used by all authenticated routes. An error boundary SHALL be implemented at the App Router
+root (`app/error.tsx` and `app/global-error.tsx`) displaying a user-friendly fallback card
+with a reload action.
+
+#### Scenario: Authenticated page renders with app shell
+
+- **WHEN** a signed-in user navigates to any `(app)` route
+- **THEN** the page SHALL render inside `AppShell` with the top navigation bar visible (logo, org-switcher, user-menu) and the left sidebar showing the Projects tree
+- **AND** the breadcrumb SHALL reflect the current Org / Project / SiteGroup path
+
+#### Scenario: Unhandled error displays error boundary
+
+- **WHEN** a React render error occurs on any `(app)` page
+- **THEN** `app/error.tsx` SHALL catch the error and display a "Something went wrong" card
+- **AND** a "Reload page" button SHALL be visible and functional
+
+#### Scenario: Global error boundary for root layout crash
+
+- **WHEN** a fatal error occurs in the root layout (e.g. auth provider crash)
+- **THEN** `app/global-error.tsx` SHALL render a minimal HTML fallback page
+- **AND** the page SHALL NOT be a blank white screen or an uncaught exception page

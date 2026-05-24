@@ -85,6 +85,31 @@ change, saving a draft. Explicit "Activate" is only possible after a successful 
 - **THEN** that version's `isActive` SHALL be set to `true` and all other versions' `isActive` set to `false`
 - **AND** `appliedAt` and `appliedHash` SHALL be set on that version
 
+### Requirement: Node palette sidebar — drag-and-drop node creation
+
+The canvas SHALL provide a fixed left sidebar node palette listing all 6 domain node
+types as draggable items. Each palette item SHALL display the node type icon, label,
+and a one-line description. Dragging a palette item onto the canvas SHALL create a new
+node of that type at the drop position using `@xyflow/react`'s `screenToFlowPosition`
+helper. A "Delete selected" toolbar button and the `Delete`/`Backspace` keyboard shortcut
+SHALL remove selected nodes and edges from the canvas.
+
+#### Scenario: Drag a node type from palette to canvas
+
+- **WHEN** a user drags the "Broker" card from the node palette and drops it on the canvas
+- **THEN** a new Broker node SHALL appear at the drop position with a unique `id` (UUID) and default configuration
+- **AND** the draft NodeConfig SHALL be marked dirty (autosave within 30 s)
+
+#### Scenario: Delete selected node via keyboard
+
+- **WHEN** a user selects a node on the canvas and presses `Delete` or `Backspace`
+- **THEN** the node and all its connected edges SHALL be removed from the canvas
+
+#### Scenario: Fit view button
+
+- **WHEN** a user clicks the "Fit view" toolbar button
+- **THEN** the canvas SHALL animate to show all nodes within the viewport with 20% padding
+
 ### Requirement: Undo/redo — 50-step history buffer
 
 The canvas SHALL maintain a 50-step undo/redo history in a Zustand store. Undo/redo

@@ -96,3 +96,36 @@ mqtt-bridge config).
 
 - **WHEN** the plan includes a TimescaleDB node with retention `7d`
 - **THEN** the `updateTsdb` op SHALL call `PATCH /v1/tenants/:id/tsdb {"retention":"7d"}`
+
+### Requirement: Apply run history — last-apply status in canvas toolbar
+
+The BFF SHALL persist each `apply.commit` call as an `ApplyRun` record (id,
+siteGroupId, planHash, success, opCount, failedAt, createdAt, resultJson). A tRPC
+`apply.status({ siteGroupId })` procedure SHALL return the most recent `ApplyRun` for a
+SiteGroup. The canvas toolbar SHALL display "Last applied: {relative time}" (green) or
+"Last apply failed" (red, with a re-run button) based on this record.
+
+#### Scenario: Canvas toolbar shows last apply time
+
+- **WHEN** a user views a SiteGroup canvas after a successful Apply
+- **THEN** the canvas toolbar SHALL display "Last applied: {time}" in green text
+- **AND** clicking it SHALL navigate to the most recent ApplyRun detail modal
+
+#### Scenario: Canvas toolbar shows failure state
+
+- **WHEN** the most recent `ApplyRun` for a SiteGroup has `success = false`
+- **THEN** the canvas toolbar SHALL display "Last apply failed" in red text with a "Re-run" button
+- **AND** clicking "Re-run" SHALL call `apply.preview` and open the Apply modal pre-filled with the failed plan
+
+### Requirement: Apply error surfacing — daemon error detail in modal
+
+When an `apply.commit` op fails, the Apply modal SHALL display the daemon's full HTTP
+response body (truncated to 2 KB) in a monospace block alongside the failing op's human-
+readable description. Operators SHALL NOT need to SSH to the EC2 host to diagnose a
+failed apply step.
+
+#### Scenario: Daemon error body displayed in modal
+
+- **WHEN** a `createSite` op returns HTTP 500 with body `{"error":"capacity guard rejected: 15% headroom minimum not met"}`
+- **THEN** the Apply modal SHALL display that error message under the failed step
+- **AND** a "Re-run failed ops" button SHALL be visible in the modal footer
