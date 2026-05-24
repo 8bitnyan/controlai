@@ -2,7 +2,7 @@
 
 ## 1. Repo bootstrap
 
-- [ ] 1.1 Run `gh repo create 8bitnyan/controlai-web --public --license=MIT --clone` to create and clone the new repo.
+- [ ] 1.1 Run `gh repo create 8bitnyan/controlai-web --public --license=MIT --clone` to create and clone the new repo. **Working-directory note:** this command is run from the ralph worktree root (a sibling checkout of the `controlai` Go repo). It creates a `controlai-web/` subdirectory. **For every subsequent task in this file (1.2 onward), the working directory MUST be that `controlai-web/` subdirectory** — `cd controlai-web` once after 1.1 and remain there. Do NOT write any of the Next.js / pnpm / Prisma files into the parent `controlai` Go repo worktree. The only file outside `controlai-web/` you may touch is the OpenSpec change directory back in the original `controlai` repo (for ticking task checkboxes), which is reachable via the parent worktree path.
 - [ ] 1.2 Create top-level `README.md` describing the project purpose, tech stack, and repo layout.
 - [ ] 1.3 Create `.gitignore` (node_modules, .env.local, .turbo, .next, dist, *.tsbuildinfo).
 - [ ] 1.4 Create `LICENSE` file with MIT license text and `Copyright (c) 2026 8bitnyan`.
