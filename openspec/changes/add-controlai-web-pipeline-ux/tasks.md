@@ -1,5 +1,18 @@
 # Tasks: add-controlai-web-pipeline-ux
 
+## 0. Operating directory (READ FIRST — CRITICAL)
+
+This change targets the **existing** `controlai-web` repository at
+`/Users/8bitnyan/Documents/ThinkTank/controlai-web/` (separate repo, already
+cloned, branch `main`, last commit `e264bf0`). The OpenSpec change docs live in
+the `controlai` repo, but **all code edits (apps/web, apps/mqtt-bridge,
+packages/*) MUST happen inside `/Users/8bitnyan/Documents/ThinkTank/controlai-web/`**.
+
+- [ ] 0.1 Before any other task: `cd /Users/8bitnyan/Documents/ThinkTank/controlai-web && git checkout -b ralph/pipeline-ux` (create a feature branch off `main`). All subsequent file edits in this change happen inside this directory on this branch.
+- [ ] 0.2 Do NOT re-clone the repo. Do NOT create a nested `controlai-web/` directory inside the current worktree. Do NOT write `apps/web` files into the controlai Go-repo worktree — they belong in the controlai-web repo above.
+- [ ] 0.3 At the end of every iteration, commit + push the feature branch: `git add -A && git commit -m "ralph(pipeline-ux): <summary>" && git push -u origin ralph/pipeline-ux`.
+- [ ] 0.4 The verifier (and acceptance §15) MUST run `pnpm install && pnpm typecheck && pnpm lint && pnpm build` inside `/Users/8bitnyan/Documents/ThinkTank/controlai-web/` and confirm zero errors before declaring DONE. A green spec validation alone is NOT sufficient — the web repo build must also be green.
+
 ## 1. @xyflow/react integration
 
 - [ ] 1.1 Install `@xyflow/react` v12 in `apps/web`: `pnpm add @xyflow/react --filter apps/web`.
