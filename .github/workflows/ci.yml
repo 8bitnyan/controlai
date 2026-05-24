@@ -69,8 +69,59 @@ jobs:
       - name: tofu validate
         run: tofu -chdir=deploy/aws/terraform validate
 
-      - name: shellcheck up.sh / down.sh
+      - name: shellcheck deploy/aws shell scripts
         uses: ludeeus/action-shellcheck@master
         with:
           scandir: deploy/aws
           severity: warning
+          additional_files: "deploy/aws/scripts/flip-acme-prod.sh deploy/aws/test/test_https_api.sh"
+
+  test-aws-https:
+    name: HTTPS API integration test (live AWS)
+    # Runs only on deploy/aws/** changes and when INTEGRATION=1 is explicitly set.
+    # Skipped in normal CI to avoid incurring AWS costs on every push.
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.modified, 'deploy/aws/') && vars.INTEGRATION == '1' }}
+    runs-on: ubuntu-latest
+    environment: aws-integration
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y curl jq gettext-base
+          # Install OpenTofu
+          curl -fsSL https://get.opentofu.org/install-opentofu.sh | sudo bash -s -- --install-method deb
+
+      - name: Provision ephemeral deployment
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          DEPLOYMENT_NAME: ci-https-${{ github.run_id }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+          ACME_STAGING: "1"
+        run: |
+          AWS_REGION="${AWS_REGION}" DEPLOYMENT_NAME="${DEPLOYMENT_NAME}" \
+            ACME_EMAIL="${ACME_EMAIL}" ACME_STAGING="1" \
+            ./deploy/aws/up.sh --yes
+
+      - name: Run HTTPS API integration test
+        env:
+          DEPLOYMENT_NAME: ci-https-${{ github.run_id }}
+        run: |
+          ./deploy/aws/test/test_https_api.sh --allow-staging
+
+      - name: Tear down ephemeral deployment
+        if: always()
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          DEPLOYMENT_NAME: ci-https-${{ github.run_id }}
+        run: |
+          AWS_REGION="${AWS_REGION}" DEPLOYMENT_NAME="${DEPLOYMENT_NAME}" \
+            ./deploy/aws/down.sh --yes
