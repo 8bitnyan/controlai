@@ -256,6 +256,7 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		Name      string `json:"name"`
 		Domain    string `json:"domain"`
 		Retention string `json:"retention"`
+		ProjectID string `json:"project_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
@@ -263,6 +264,11 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := validateSlugHTTP(w, req.Slug); err != nil {
 		return
+	}
+	if req.ProjectID != "" {
+		if err := validateProjectIDHTTP(w, req.ProjectID); err != nil {
+			return
+		}
 	}
 	if req.Retention == "" {
 		req.Retention = "7d"
@@ -279,6 +285,7 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		Domain:        req.Domain,
 		Retention:     req.Retention,
 		SchemaVersion: 1,
+		ProjectID:     req.ProjectID,
 	})
 	if err != nil {
 		if err == sqlite.ErrDuplicate {
@@ -302,12 +309,28 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 	// Non-fatal on non-Linux or environments without systemd.
 	installBackupTimer(tenantID, s.cfg.DevMode, s.log)
 
-	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindTenantCreate, TenantID: tenantID, Success: true})
-	writeJSON(w, http.StatusCreated, map[string]string{"id": tenantID})
+	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindTenantCreate, TenantID: tenantID, ProjectID: req.ProjectID, Success: true})
+	out := map[string]string{"id": tenantID}
+	if req.ProjectID != "" {
+		out["project_id"] = req.ProjectID
+	}
+	writeJSON(w, http.StatusCreated, out)
 }
 
 func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.ListTenants(r.Context())
+	var projectIDFilter *string
+	if v, ok := r.URL.Query()["project_id"]; ok {
+		// Query param present (even if empty).
+		filter := v[0]
+		// Validate non-empty values; empty string means "untagged" which is valid.
+		if filter != "" {
+			if err := validateProjectIDHTTP(w, filter); err != nil {
+				return
+			}
+		}
+		projectIDFilter = &filter
+	}
+	rows, err := s.store.ListTenantsFiltered(r.Context(), projectIDFilter)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -332,22 +355,40 @@ func (s *Server) handleGetTenant(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
 	tid := chi.URLParam(r, "tid")
 	var req struct {
-		Retention string `json:"retention"`
-		Name      string `json:"name"`
-		Domain    string `json:"domain"`
+		Retention *string `json:"retention"`
+		Name      string  `json:"name"`
+		Domain    string  `json:"domain"`
+		ProjectID *string `json:"project_id"` // nil = not in payload; ptr to "" = clear; ptr to val = set
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
 	}
 	// Validate retention if provided.
-	if req.Retention != "" {
+	if req.Retention != nil && *req.Retention != "" {
 		validRet := map[string]bool{"1m": true, "1h": true, "1d": true, "7d": true, "30d": true}
-		if !validRet[req.Retention] {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid retention %q: must be one of 1m 1h 1d 7d 30d", req.Retention))
+		if !validRet[*req.Retention] {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid retention %q: must be one of 1m 1h 1d 7d 30d", *req.Retention))
 			return
 		}
-		if err := s.store.UpdateTenantRetention(r.Context(), tid, req.Retention); err != nil {
+		if err := s.store.UpdateTenantRetention(r.Context(), tid, *req.Retention); err != nil {
+			if err == sqlite.ErrNotFound {
+				writeErr(w, http.StatusNotFound, fmt.Errorf("tenant %q not found", tid))
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	// Update project_id if present in payload.
+	if req.ProjectID != nil {
+		pid := *req.ProjectID
+		if pid != "" {
+			if err := validateProjectIDHTTP(w, pid); err != nil {
+				return
+			}
+		}
+		if err := s.store.UpdateTenantProjectID(r.Context(), tid, pid); err != nil {
 			if err == sqlite.ErrNotFound {
 				writeErr(w, http.StatusNotFound, fmt.Errorf("tenant %q not found", tid))
 				return
@@ -358,24 +399,44 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	// Re-render TSDB init.sql and related files so the retention policy change
 	// propagates to the compose project on the next reconciler tick.
-	if req.Retention != "" {
+	if req.Retention != nil && *req.Retention != "" {
 		if _, err := renderAndWriteTSDB(r.Context(), tid, s.store, s.renderer, s.cfg.DataDir); err != nil {
 			s.log.Warn("re-render TSDB after retention change failed", "tenant", tid, "err", err)
 		} else if s.recon != nil {
 			go s.recon.Trigger(context.Background())
 		}
 	}
+
+	// Fetch updated tenant to include in response and audit.
+	tenant, err := s.store.GetTenant(r.Context(), tid)
+	if err != nil {
+		if err == sqlite.ErrNotFound {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("tenant %q not found", tid))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	retVal := ""
+	if req.Retention != nil {
+		retVal = *req.Retention
+	}
 	_ = s.audit.Emit(r.Context(), audit.Event{
-		Kind: audit.KindTenantUpdate, TenantID: tid,
-		Detail:  fmt.Sprintf(`{"retention":%q}`, req.Retention),
-		Success: true,
+		Kind:      audit.KindTenantUpdate,
+		TenantID:  tid,
+		ProjectID: tenant.ProjectID,
+		Detail:    fmt.Sprintf(`{"retention":%q}`, retVal),
+		Success:   true,
 	})
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, tenant)
 }
 
 func (s *Server) handleDeleteTenant(w http.ResponseWriter, r *http.Request) {
 	tid := chi.URLParam(r, "tid")
 	purge := r.URL.Query().Get("purge") == "true"
+	// Look up project_id before deleting for audit log enrichment.
+	pid := s.tenantProjectID(r.Context(), tid)
 
 	// Set desired_state=stopped for the TSDB project and all sites before
 	// changing SQLite status, so the reconciler stops containers on the next tick.
@@ -406,7 +467,7 @@ func (s *Server) handleDeleteTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindTenantDelete, TenantID: tid,
-		Detail: fmt.Sprintf(`{"purge":%t}`, purge), Success: true})
+		ProjectID: pid, Detail: fmt.Sprintf(`{"purge":%t}`, purge), Success: true})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -514,7 +575,7 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		go s.recon.Trigger(context.Background())
 	}
 
-	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindSiteCreate, TenantID: tid, SiteID: siteID, Success: true})
+	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindSiteCreate, TenantID: tid, SiteID: siteID, ProjectID: s.tenantProjectID(r.Context(), tid), Success: true})
 	writeJSON(w, http.StatusCreated, map[string]string{"id": siteID})
 }
 
@@ -595,8 +656,9 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 
 	_ = s.audit.Emit(r.Context(), audit.Event{
 		Kind: audit.KindSiteUpdate, TenantID: tid, SiteID: sid,
-		Detail:  fmt.Sprintf(`{"codec":%q,"direction":%q}`, req.PayloadCodec, req.Direction),
-		Success: true,
+		ProjectID: s.tenantProjectID(r.Context(), tid),
+		Detail:    fmt.Sprintf(`{"codec":%q,"direction":%q}`, req.PayloadCodec, req.Direction),
+		Success:   true,
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -624,6 +686,7 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindSiteDelete, TenantID: tid, SiteID: sid,
+		ProjectID: s.tenantProjectID(r.Context(), tid),
 		Detail: fmt.Sprintf(`{"purge":%t}`, purge), Success: true})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -632,7 +695,8 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStartTenant(w http.ResponseWriter, r *http.Request) {
 	tid := chi.URLParam(r, "tid")
-	if _, err := s.store.GetTenant(r.Context(), tid); err != nil {
+	tenant, err := s.store.GetTenant(r.Context(), tid)
+	if err != nil {
 		if err == sqlite.ErrNotFound {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("tenant %q not found", tid))
 			return
@@ -648,13 +712,14 @@ func (s *Server) handleStartTenant(w http.ResponseWriter, r *http.Request) {
 		go s.recon.Trigger(context.Background())
 	}
 	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindTenantUpdate, TenantID: tid,
-		Detail: `{"action":"start"}`, Success: true})
+		ProjectID: tenant.ProjectID, Detail: `{"action":"start"}`, Success: true})
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "starting"})
 }
 
 func (s *Server) handleStopTenant(w http.ResponseWriter, r *http.Request) {
 	tid := chi.URLParam(r, "tid")
-	if _, err := s.store.GetTenant(r.Context(), tid); err != nil {
+	tenant, err := s.store.GetTenant(r.Context(), tid)
+	if err != nil {
 		if err == sqlite.ErrNotFound {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("tenant %q not found", tid))
 			return
@@ -677,7 +742,7 @@ func (s *Server) handleStopTenant(w http.ResponseWriter, r *http.Request) {
 		go s.recon.Trigger(context.Background())
 	}
 	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindTenantUpdate, TenantID: tid,
-		Detail: `{"action":"stop"}`, Success: true})
+		ProjectID: tenant.ProjectID, Detail: `{"action":"stop"}`, Success: true})
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopping"})
 }
 
@@ -699,7 +764,7 @@ func (s *Server) handleStartSite(w http.ResponseWriter, r *http.Request) {
 		go s.recon.Trigger(context.Background())
 	}
 	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindSiteStart, TenantID: tid, SiteID: sid,
-		Success: true})
+		ProjectID: s.tenantProjectID(r.Context(), tid), Success: true})
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "starting"})
 }
 
@@ -721,7 +786,7 @@ func (s *Server) handleStopSite(w http.ResponseWriter, r *http.Request) {
 		go s.recon.Trigger(context.Background())
 	}
 	_ = s.audit.Emit(r.Context(), audit.Event{Kind: audit.KindSiteStop, TenantID: tid, SiteID: sid,
-		Success: true})
+		ProjectID: s.tenantProjectID(r.Context(), tid), Success: true})
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopping"})
 }
 
@@ -1105,11 +1170,12 @@ func (s *Server) handlePKIIssueCert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = s.audit.Emit(r.Context(), audit.Event{
-		Kind:     audit.KindPKIIssueCert,
-		TenantID: tid,
-		SiteID:   sid,
-		Detail:   fmt.Sprintf(`{"cn":%q,"fingerprint":%q}`, cn, leaf.Fingerprint),
-		Success:  true,
+		Kind:      audit.KindPKIIssueCert,
+		TenantID:  tid,
+		SiteID:    sid,
+		ProjectID: s.tenantProjectID(r.Context(), tid),
+		Detail:    fmt.Sprintf(`{"cn":%q,"fingerprint":%q}`, cn, leaf.Fingerprint),
+		Success:   true,
 	})
 
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -1149,11 +1215,12 @@ func (s *Server) handlePKIRevokeCert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = s.audit.Emit(r.Context(), audit.Event{
-		Kind:     audit.KindPKIRevokeCert,
-		TenantID: tid,
-		SiteID:   sid,
-		Detail:   fmt.Sprintf(`{"fingerprint":%q}`, fp),
-		Success:  true,
+		Kind:      audit.KindPKIRevokeCert,
+		TenantID:  tid,
+		SiteID:    sid,
+		ProjectID: s.tenantProjectID(r.Context(), tid),
+		Detail:    fmt.Sprintf(`{"fingerprint":%q}`, fp),
+		Success:   true,
 	})
 
 	// For mosquitto-backed sites, revocation is enforced by restarting the broker
@@ -1326,6 +1393,19 @@ func (s *Server) admissionCheck(ctx context.Context, newTenantID string, newSite
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// tenantProjectID returns the project_id for a tenant, or empty string on any error.
+// Used for best-effort audit log enrichment — failures are non-fatal.
+func (s *Server) tenantProjectID(ctx context.Context, tenantID string) string {
+	if tenantID == "" {
+		return ""
+	}
+	t, err := s.store.GetTenant(ctx, tenantID)
+	if err != nil {
+		return ""
+	}
+	return t.ProjectID
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -1334,6 +1414,27 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+
+// validateProjectIDHTTP validates the project_id field: 1–64 alphanumeric, underscore,
+// or hyphen characters. Empty string is allowed (means "clear") — callers decide
+// whether empty is acceptable before calling this.
+func validateProjectIDHTTP(w http.ResponseWriter, projectID string) error {
+	if len(projectID) > 64 {
+		err := fmt.Errorf("project_id %q exceeds 64 characters (max 64 characters of [a-zA-Z0-9_-])", projectID)
+		writeErr(w, http.StatusBadRequest, err)
+		return err
+	}
+	for _, c := range projectID {
+		valid := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-'
+		if !valid {
+			err := fmt.Errorf("project_id %q contains invalid character %q: must match [a-zA-Z0-9_-]{1,64}", projectID, c)
+			writeErr(w, http.StatusBadRequest, err)
+			return err
+		}
+	}
+	return nil
 }
 
 func validateSlugHTTP(w http.ResponseWriter, slug string) error {

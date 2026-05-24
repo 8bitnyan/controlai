@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,18 @@ func deleteReq(t *testing.T, ts *httptest.Server, path string) *http.Response {
 	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("DELETE %s: %v", path, err)
+	}
+	return resp
+}
+
+func patchJSON(t *testing.T, ts *httptest.Server, path string, body any) *http.Response {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("PATCH %s: %v", path, err)
 	}
 	return resp
 }
@@ -468,4 +481,231 @@ func TestTokenAuthMiddleware_ValidToken(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 with valid token, got %d", resp.StatusCode)
 	}
+}
+
+// ─── project_id handler tests ─────────────────────────────────────────────────
+
+// TestHandleCreateTenant_WithProjectID verifies that POST /v1/tenants with a
+// project_id persists the tag and includes it in the response (spec scenario
+// "Create a tenant with project_id").
+func TestHandleCreateTenant_WithProjectID(t *testing.T) {
+	store := openTestStore(t)
+	ts := newTestServer(t, store)
+	defer ts.Close()
+
+	resp := postJSON(t, ts, "/v1/tenants", map[string]string{
+		"slug": "proj-tenant", "project_id": "proj-abc123",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var body map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["project_id"] != "proj-abc123" {
+		t.Errorf("expected project_id=proj-abc123 in response, got %q", body["project_id"])
+	}
+
+	// Also verify the tenant was persisted correctly.
+	got := getJSON(t, ts, "/v1/tenants/tnt_proj-tenant")
+	defer got.Body.Close()
+	var tenant map[string]any
+	_ = json.NewDecoder(got.Body).Decode(&tenant)
+	if tenant["project_id"] != "proj-abc123" {
+		t.Errorf("GET tenant: expected project_id=proj-abc123, got %v", tenant["project_id"])
+	}
+}
+
+// TestHandleCreateTenant_InvalidProjectID verifies that an invalid project_id
+// returns HTTP 400 (spec scenario "Reject invalid project_id").
+func TestHandleCreateTenant_InvalidProjectID(t *testing.T) {
+	store := openTestStore(t)
+	ts := newTestServer(t, store)
+	defer ts.Close()
+
+	cases := []string{
+		"has space",
+		"has@symbol",
+		"has.dot",
+		"has/slash",
+		"tooLong_" + strings.Repeat("x", 60), // > 64 chars
+	}
+	for _, pid := range cases {
+		resp := postJSON(t, ts, "/v1/tenants", map[string]string{
+			"slug": "slug-" + strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(pid[:min(len(pid), 5)], " ", ""), "@", "")),
+			"project_id": pid,
+		})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("project_id %q: expected 400, got %d", pid, resp.StatusCode)
+		}
+	}
+}
+
+// TestHandleUpdateTenant_ProjectID verifies that PATCH updates project_id and
+// returns the updated tenant (spec scenario "Update project_id on existing tenant").
+func TestHandleUpdateTenant_ProjectID(t *testing.T) {
+	store := openTestStore(t)
+	ts := newTestServer(t, store)
+	defer ts.Close()
+
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "patch-tenant", "project_id": "proj-abc"}).Body.Close()
+
+	resp := patchJSON(t, ts, "/v1/tenants/tnt_patch-tenant", map[string]string{
+		"project_id": "proj-xyz456",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["project_id"] != "proj-xyz456" {
+		t.Errorf("expected project_id=proj-xyz456 in PATCH response, got %v", body["project_id"])
+	}
+}
+
+// TestHandleUpdateTenant_InvalidProjectID verifies that PATCH with an invalid
+// project_id returns HTTP 400.
+func TestHandleUpdateTenant_InvalidProjectID(t *testing.T) {
+	store := openTestStore(t)
+	ts := newTestServer(t, store)
+	defer ts.Close()
+
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "patch-bad"}).Body.Close()
+
+	resp := patchJSON(t, ts, "/v1/tenants/tnt_patch-bad", map[string]string{
+		"project_id": "invalid id!",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid project_id, got %d", resp.StatusCode)
+	}
+}
+
+// TestHandleListTenants_FilterByProjectID verifies that ?project_id= filter returns
+// only tenants with that project_id (spec scenario "Filter tenants by project_id").
+func TestHandleListTenants_FilterByProjectID(t *testing.T) {
+	store := openTestStore(t)
+	ts := newTestServer(t, store)
+	defer ts.Close()
+
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "a1", "project_id": "proj-target"}).Body.Close()
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "a2", "project_id": "proj-target"}).Body.Close()
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "a3", "project_id": "proj-other"}).Body.Close()
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "a4"}).Body.Close()
+
+	resp := getJSON(t, ts, "/v1/tenants?project_id=proj-target")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var rows []map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&rows)
+	if len(rows) != 2 {
+		t.Errorf("expected 2 tenants with proj-target, got %d", len(rows))
+	}
+	for _, r := range rows {
+		if r["project_id"] != "proj-target" {
+			t.Errorf("unexpected project_id %v in filtered result", r["project_id"])
+		}
+	}
+}
+
+// TestHandleListTenants_FilterUntagged verifies that ?project_id= (empty) returns
+// only untagged tenants (spec scenario "List untagged tenants").
+func TestHandleListTenants_FilterUntagged(t *testing.T) {
+	store := openTestStore(t)
+	ts := newTestServer(t, store)
+	defer ts.Close()
+
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "b1"}).Body.Close()
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "b2", "project_id": "proj-tagged"}).Body.Close()
+
+	resp := getJSON(t, ts, "/v1/tenants?project_id=")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var rows []map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&rows)
+	for _, r := range rows {
+		if pid, _ := r["project_id"].(string); pid != "" {
+			t.Errorf("expected only untagged tenants, got tenant with project_id=%q", pid)
+		}
+	}
+	if len(rows) < 1 {
+		t.Error("expected at least one untagged tenant")
+	}
+}
+
+// TestHandleListTenants_NoFilter verifies that omitting ?project_id= returns all
+// tenants (spec scenario "Unfiltered list returns all tenants").
+func TestHandleListTenants_NoFilter(t *testing.T) {
+	store := openTestStore(t)
+	ts := newTestServer(t, store)
+	defer ts.Close()
+
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "c1"}).Body.Close()
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "c2", "project_id": "proj-any"}).Body.Close()
+
+	resp := getJSON(t, ts, "/v1/tenants")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var rows []map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&rows)
+	if len(rows) < 2 {
+		t.Errorf("expected at least 2 tenants with no filter, got %d", len(rows))
+	}
+}
+
+// TestHandleGetTenant_IncludesProjectID verifies that GET /v1/tenants/:id includes
+// project_id in the response JSON (task 3.4).
+func TestHandleGetTenant_IncludesProjectID(t *testing.T) {
+	store := openTestStore(t)
+	ts := newTestServer(t, store)
+	defer ts.Close()
+
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "get-proj", "project_id": "proj-get123"}).Body.Close()
+
+	resp := getJSON(t, ts, "/v1/tenants/tnt_get-proj")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["project_id"] != "proj-get123" {
+		t.Errorf("expected project_id=proj-get123, got %v", body["project_id"])
+	}
+}
+
+// TestHandleLegacyTenant_OmitsProjectID verifies that a tenant without a project_id
+// does NOT include the "project_id" key in its JSON response (omitempty, task 6.3).
+func TestHandleLegacyTenant_OmitsProjectID(t *testing.T) {
+	store := openTestStore(t)
+	ts := newTestServer(t, store)
+	defer ts.Close()
+
+	postJSON(t, ts, "/v1/tenants", map[string]string{"slug": "legacy-tenant"}).Body.Close()
+
+	resp := getJSON(t, ts, "/v1/tenants/tnt_legacy-tenant")
+	defer resp.Body.Close()
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+
+	// project_id must be absent (omitempty) for backward compatibility.
+	if _, ok := body["project_id"]; ok {
+		t.Errorf("expected project_id to be absent for untagged tenant (omitempty), but it was present: %v", body["project_id"])
+	}
+}
+
+// min is a small helper for computing minimum int; avoids importing slices.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

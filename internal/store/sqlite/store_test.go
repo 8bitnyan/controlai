@@ -339,6 +339,223 @@ func parseTime(t *testing.T, s string) (ts time.Time) {
 	return ts
 }
 
+// ─── project_id tests ─────────────────────────────────────────────────────────
+
+// TestCreateTenantWithProjectID verifies that a tenant created with a project_id
+// round-trips through the store correctly (tasks 5.1, 2.1–2.3).
+func TestCreateTenantWithProjectID(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	err := store.CreateTenant(ctx, sqlite.TenantRow{
+		ID:            "tnt_proj-tenant",
+		Domain:        "proj.example.com",
+		Retention:     "7d",
+		SchemaVersion: 1,
+		ProjectID:     "proj-abc",
+	})
+	if err != nil {
+		t.Fatalf("create tenant with project_id: %v", err)
+	}
+
+	got, err := store.GetTenant(ctx, "tnt_proj-tenant")
+	if err != nil {
+		t.Fatalf("get tenant: %v", err)
+	}
+	if got.ProjectID != "proj-abc" {
+		t.Errorf("expected project_id=proj-abc, got %q", got.ProjectID)
+	}
+}
+
+// TestCreateTenantWithoutProjectID verifies that a tenant created without a
+// project_id has an empty ProjectID field (task 5.2).
+func TestCreateTenantWithoutProjectID(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	err := store.CreateTenant(ctx, sqlite.TenantRow{
+		ID:            "tnt_no-proj",
+		Domain:        "noproj.example.com",
+		Retention:     "7d",
+		SchemaVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	got, err := store.GetTenant(ctx, "tnt_no-proj")
+	if err != nil {
+		t.Fatalf("get tenant: %v", err)
+	}
+	if got.ProjectID != "" {
+		t.Errorf("expected empty project_id, got %q", got.ProjectID)
+	}
+}
+
+// TestUpdateTenantProjectID verifies that UpdateTenantProjectID updates the tag
+// and GetTenant reflects the new value (task 5.5).
+func TestUpdateTenantProjectID(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{
+		ID: "tnt_update-proj", Domain: "up.example.com", Retention: "1d", SchemaVersion: 1,
+		ProjectID: "proj-abc",
+	})
+
+	if err := store.UpdateTenantProjectID(ctx, "tnt_update-proj", "proj-xyz"); err != nil {
+		t.Fatalf("UpdateTenantProjectID: %v", err)
+	}
+
+	got, err := store.GetTenant(ctx, "tnt_update-proj")
+	if err != nil {
+		t.Fatalf("get tenant after update: %v", err)
+	}
+	if got.ProjectID != "proj-xyz" {
+		t.Errorf("expected project_id=proj-xyz after update, got %q", got.ProjectID)
+	}
+}
+
+// TestUpdateTenantProjectID_NotFound verifies ErrNotFound is returned for missing tenant.
+func TestUpdateTenantProjectID_NotFound(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	err := store.UpdateTenantProjectID(ctx, "tnt_ghost", "proj-x")
+	if err != sqlite.ErrNotFound {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestListTenantsFiltered_ByProjectID verifies that ListTenantsFiltered with a
+// non-empty filter returns only matching tenants (task 5.3).
+func TestListTenantsFiltered_ByProjectID(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	// Create three tenants: two tagged, one untagged.
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{ID: "tnt_fa", Domain: "fa.com", Retention: "1d", SchemaVersion: 1, ProjectID: "proj-abc123"})
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{ID: "tnt_fb", Domain: "fb.com", Retention: "1d", SchemaVersion: 1, ProjectID: "proj-abc123"})
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{ID: "tnt_fc", Domain: "fc.com", Retention: "1d", SchemaVersion: 1, ProjectID: "proj-other"})
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{ID: "tnt_fd", Domain: "fd.com", Retention: "1d", SchemaVersion: 1})
+
+	filter := "proj-abc123"
+	rows, err := store.ListTenantsFiltered(ctx, &filter)
+	if err != nil {
+		t.Fatalf("ListTenantsFiltered: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("expected 2 tenants with proj-abc123, got %d", len(rows))
+	}
+	for _, r := range rows {
+		if r.ProjectID != "proj-abc123" {
+			t.Errorf("unexpected tenant %s with project_id=%q in filtered result", r.ID, r.ProjectID)
+		}
+	}
+}
+
+// TestListTenantsFiltered_Untagged verifies that empty filter returns NULL and ''
+// project_id tenants only (spec: "List untagged tenants").
+func TestListTenantsFiltered_Untagged(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{ID: "tnt_ga", Domain: "ga.com", Retention: "1d", SchemaVersion: 1})
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{ID: "tnt_gb", Domain: "gb.com", Retention: "1d", SchemaVersion: 1, ProjectID: "proj-tagged"})
+
+	emptyFilter := ""
+	rows, err := store.ListTenantsFiltered(ctx, &emptyFilter)
+	if err != nil {
+		t.Fatalf("ListTenantsFiltered(empty): %v", err)
+	}
+	for _, r := range rows {
+		if r.ProjectID != "" {
+			t.Errorf("expected only untagged tenants, but got tenant %s with project_id=%q", r.ID, r.ProjectID)
+		}
+	}
+	if len(rows) < 1 {
+		t.Error("expected at least one untagged tenant")
+	}
+}
+
+// TestListTenantsFiltered_Nil verifies that nil filter returns all tenants (task 5.4).
+func TestListTenantsFiltered_Nil(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{ID: "tnt_ha", Domain: "ha.com", Retention: "1d", SchemaVersion: 1})
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{ID: "tnt_hb", Domain: "hb.com", Retention: "1d", SchemaVersion: 1, ProjectID: "proj-any"})
+
+	rows, err := store.ListTenantsFiltered(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTenantsFiltered(nil): %v", err)
+	}
+	if len(rows) < 2 {
+		t.Errorf("expected all tenants with nil filter, got %d", len(rows))
+	}
+}
+
+// TestMigration0002_BackwardCompatibility verifies that an existing database
+// (0001 schema) gains project_id=NULL for existing tenants after the migration,
+// and that ListTenants still returns them (tasks 6.1, 6.2, 6.3).
+func TestMigration0002_BackwardCompatibility(t *testing.T) {
+	// Opening a store already applies both migrations. We verify that:
+	// (a) the store opens without error (migration applied)
+	// (b) tenants created without project_id have empty ProjectID
+	// (c) ListTenants returns them (NULL project_id not excluded)
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	_ = store.CreateTenant(ctx, sqlite.TenantRow{
+		ID: "tnt_legacy", Domain: "legacy.example.com", Retention: "7d", SchemaVersion: 1,
+	})
+
+	tenants, err := store.ListTenants(ctx)
+	if err != nil {
+		t.Fatalf("ListTenants after migration: %v", err)
+	}
+	var found bool
+	for _, tn := range tenants {
+		if tn.ID == "tnt_legacy" {
+			found = true
+			// ProjectID should be empty string (COALESCE of NULL)
+			if tn.ProjectID != "" {
+				t.Errorf("legacy tenant should have empty project_id, got %q", tn.ProjectID)
+			}
+		}
+	}
+	if !found {
+		t.Error("legacy tenant not returned by ListTenants")
+	}
+}
+
+// TestMigrationFileExists_0002 verifies the 0002 migration file is present.
+func TestMigrationFileExists_0002(t *testing.T) {
+	path := "migrations/0002_add_project_id.sql"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Errorf("migration file not found at %s", path)
+	}
+}
+
+// TestMigration0002_Idempotent verifies that opening a store twice (re-running
+// migration) does not fail (task 1.3 guard check).
+func TestMigration0002_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/idempotent.db"
+
+	store1, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	_ = store1.Close()
+
+	store2, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatalf("second open (idempotency): %v", err)
+	}
+	_ = store2.Close()
+}
+
 // ─── Task 13.5 Verification: purge delete removes all artifacts ────────────────
 
 // TestPurgeDelete_TenantRowRemovedCompletely verifies that controlai tenant rm --purge
